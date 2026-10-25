@@ -1,7 +1,9 @@
 # Starts AutoCAD in the interactive session and waits until it is ready (wait-acad.ps1). Works locally and from SSH.
 #   -Exe      acad.exe (default: ACAD_DEV_EXE, else found in the registry: newest of 2024-2026)
 #   -Product  /product switch (default: ACAD_DEV_PRODUCT; empty = none). Use ACAD if a vertical (e.g. Electrical) starts instead.
-param([string]$Exe = '', [string]$Product = $env:ACAD_DEV_PRODUCT, [int]$TimeoutSec = 240)
+#   -Trust    folders to add to TRUSTEDPATHS once AutoCAD is ready, ';'-separated (default: ACAD_DEV_TRUSTED; empty = none).
+#             End a folder with \... to include its subfolders. Plugins loaded from there skip the unsigned-file dialog.
+param([string]$Exe = '', [string]$Product = $env:ACAD_DEV_PRODUCT, [string]$Trust = $env:ACAD_DEV_TRUSTED, [int]$TimeoutSec = 240)
 . (Join-Path $PSScriptRoot 'common.ps1')
 if (Get-Process acad -EA SilentlyContinue) { 'acad already running' }
 else {
@@ -22,4 +24,14 @@ else {
   "acad pid $((Get-Process acad | Select-Object -First 1).Id) up ($Exe)"
 }
 & (Join-Path $PSScriptRoot 'wait-acad.ps1') -TimeoutSec $TimeoutSec
-exit $LASTEXITCODE
+$rc = $LASTEXITCODE
+if ($rc -eq 0 -and $Trust) {
+  # task arguments can't carry the paths (spaces, quotes), so they go through a file
+  Set-Content (Join-Path $script:Home_ 'trust.txt') ($Trust -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+  $r = Join-Path $script:Out 'trust.txt'; Remove-Item $r -EA SilentlyContinue
+  Invoke-InSession -Script (Join-Path $PSScriptRoot 'trust-paths.ps1') -TaskName 'AcadDevTrust' -TimeoutSec 30 | Out-Null
+  $msg = if (Test-Path $r) { (Get-Content $r -Raw).Trim() } else { 'trusted paths: FAILED no result' }
+  $msg
+  if ($msg -like '*FAILED*') { $rc = 1 }
+}
+exit $rc
