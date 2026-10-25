@@ -50,7 +50,7 @@ case "$cmd" in
       && echo "installed to $HW\\scripts" || { echo "scp failed" >&2; exit 2; } ;;
   start)
     tmo=240; trust="${ACAD_DEV_TRUSTED:-}"
-    while [ $# -gt 0 ]; do case "$1" in --trust) trust="$2"; shift ;; *) tmo="$1" ;; esac; shift; done
+    while [ $# -gt 0 ]; do case "$1" in --trust) [ $# -ge 2 ] || { echo "--trust needs a value" >&2; exit 2; }; trust="$2"; shift ;; *) tmo="$1" ;; esac; shift; done
     [[ "$trust" == *"'"* ]] && { echo "--trust: no single quotes in paths" >&2; exit 2; }
     if [ -n "$trust" ]; then psa start-acad.ps1 -TimeoutSec "$tmo" -Trust "'$trust'"; else psa start-acad.ps1 -TimeoutSec "$tmo"; fi ;;
   wait) psa wait-acad.ps1 -TimeoutSec "${1:-240}" ;;
