@@ -6,7 +6,8 @@
 #   ACAD_DEV_HOME       optional: work folder ON THE WINDOWS BOX (default %USERPROFILE%\acad-dev). Set it there as a user env var too.
 # Usage: acad-dev.sh <command> [args]
 #   install                     copy the scripts to the box (run once, and after updating the kit)
-#   start [timeoutSec]          start AutoCAD in the interactive session and wait until it is ready
+#   start [timeoutSec] [--trust "C:\a\...;C:\b"]   start AutoCAD in the interactive session and wait until it is ready;
+#                               --trust (or ACAD_DEV_TRUSTED) adds those folders to TRUSTEDPATHS (saved in the AutoCAD profile)
 #   wait [timeoutSec]           wait until AutoCAD answers over COM and is quiescent
 #   stop [--discard|--force]    quit AutoCAD (refuses if a drawing has unsaved changes; --discard throws them away, --force kills a hung AutoCAD)
 #   run "<cmds>" [--query f.ps1] [--wait n] [--timeout s]   send commands ('|' separates, \n = Enter), optional COM query; prints the log tail
@@ -47,7 +48,11 @@ case "$cmd" in
     rps "New-Item -ItemType Directory -Force '$HW\\scripts\\queries','$HW\\out' | Out-Null; exit 0" >/dev/null
     scp -q "$here"/*.ps1 "$here"/*.vbs "$HOST:$H/scripts/" && scp -q "$here"/queries/*.ps1 "$HOST:$H/scripts/queries/" \
       && echo "installed to $HW\\scripts" || { echo "scp failed" >&2; exit 2; } ;;
-  start) psa start-acad.ps1 -TimeoutSec "${1:-240}" ;;
+  start)
+    tmo=240; trust="${ACAD_DEV_TRUSTED:-}"
+    while [ $# -gt 0 ]; do case "$1" in --trust) [ $# -ge 2 ] || { echo "--trust needs a value" >&2; exit 2; }; trust="$2"; shift ;; *) tmo="$1" ;; esac; shift; done
+    [[ "$trust" == *"'"* ]] && { echo "--trust: no single quotes in paths" >&2; exit 2; }
+    if [ -n "$trust" ]; then psa start-acad.ps1 -TimeoutSec "$tmo" -Trust "'$trust'"; else psa start-acad.ps1 -TimeoutSec "$tmo"; fi ;;
   wait) psa wait-acad.ps1 -TimeoutSec "${1:-240}" ;;
   stop) case "${1:-}" in --force) psa stop-acad.ps1 -Force ;; --discard) psa stop-acad.ps1 -DiscardChanges ;; *) psa stop-acad.ps1 ;; esac ;;
   run|query)

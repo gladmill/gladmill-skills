@@ -33,7 +33,9 @@ Remote home and scripts folder paths must not contain spaces.
 Every example below shows local (PowerShell, from the `scripts` folder) then remote (`acad-dev.sh`).
 
 1. **Start and wait until ready**
-   - `.\start-acad.ps1` | `acad-dev.sh start` (returns when AutoCAD answers over COM and is quiescent; no-op if running)
+   - `.\start-acad.ps1` | `acad-dev.sh start` (returns when AutoCAD answers over COM and is quiescent; no-op if running).
+     If the user set `ACAD_DEV_TRUSTED` (or asks for `--trust`), start also adds those folders to `TRUSTEDPATHS`. Only the user
+     picks trusted folders; never add one on your own to get past the unsigned-file dialog.
    - Already running? `.\wait-acad.ps1` | `acad-dev.sh wait`. Never sleep or watch window titles instead.
    - acad.exe is found via the registry (newest of 2024-2026) or `ACAD_DEV_EXE`. If a vertical product starts (Electrical,
      Mechanical), set `ACAD_DEV_PRODUCT=ACAD`.
