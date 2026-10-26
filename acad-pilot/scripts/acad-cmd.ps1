@@ -6,13 +6,35 @@
 #   -HasQuery: run <home>\query.ps1 first ($acad / $doc in scope; read-only COM queries; no AutoLISP)
 param([int]$WaitSec = 3, [switch]$HasQuery, [switch]$NoShot)
 . (Join-Path $PSScriptRoot 'common.ps1')
+. (Join-Path $PSScriptRoot 'clear-blockers.ps1')
 $out = $script:Out
 $res = Join-Path $out 'result.txt'; "" | Set-Content $res
 function W($s) { Add-Content $res $s }
 $cmdsFile = Join-Path $script:Home_ 'cmds.txt'
 $Cmds = if (Test-Path $cmdsFile) { Get-Content $cmdsFile -Raw } else { '' }
 try {
-  $acad = [Runtime.InteropServices.Marshal]::GetActiveObject('AutoCAD.Application')
+  # Attach to AutoCAD's COM. A modal dialog can make this fail (MK_E_UNAVAILABLE) or be rejected
+  # (RPC_E_CALL_REJECTED), or (Drawing Recovery) let the attach succeed but leave ActiveDocument null;
+  # close the ones we safely can first, retry the attach, and report the rest in words (not a raw
+  # HRESULT) so the caller knows what to dismiss. A screenshot is taken below.
+  $blk = Clear-Blockers   # proactive: Drawing Recovery does not make the attach throw, so clear it up front
+  if (@($blk.closed)) { W "cleared dialog(s): $(@($blk.closed) -join ', ')"; Start-Sleep -Seconds 1 }
+  $acad = $null
+  for ($try = 0; $try -lt 3 -and -not $acad; $try++) {
+    try { $acad = [Runtime.InteropServices.Marshal]::GetActiveObject('AutoCAD.Application') }
+    catch {
+      if ("$($_.Exception.Message)" -match 'MK_E_UNAVAILABLE|0x800401E3|RPC_E_CALL_REJECTED|0x80010001|rejected|unavailable') {
+        $blk = Clear-Blockers
+        if ($try -eq 0 -and @($blk.closed)) { W "cleared dialog(s): $(@($blk.closed) -join ', ')" }
+        Start-Sleep -Seconds 2
+      } else { throw }
+    }
+  }
+  if (-not $acad) {
+    $hint = if ($blk -and @($blk.manual)) { "a $(@($blk.manual) -join ', ') is open and must be dismissed by hand" }
+            else { "a modal dialog is likely open (Drawing Recovery, a licence/sign-in window, or a command waiting at a prompt)" }
+    throw "AutoCAD is not answering COM: $hint. See the screenshot in out\shot.png, dismiss it, and retry."
+  }
   $doc = try { $acad.ActiveDocument } catch { $null }   # COM can throw when no drawing is open (Start tab)
   # Only commands need a drawing; a query (e.g. stop, close-all) must work from the Start tab with none open.
   if (-not $doc -and $Cmds) { W "no active doc, adding one"; $doc = $acad.Documents.Add(); Start-Sleep 5; $doc = try { $acad.ActiveDocument } catch { $null } }

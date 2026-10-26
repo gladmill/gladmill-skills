@@ -60,7 +60,10 @@ Every example below shows local (PowerShell, from the `scripts` folder) then rem
 6. **Stuck? (COM hangs, `RPC_E_CALL_REJECTED`, `TIMEOUT`)** AutoCAD is at a prompt or a modal dialog.
    1. Screenshot (no COM needed). 2. `run-task.ps1 esc.ps1` | `acad-dev.sh esc` (leaves a prompt; exit 3 / `foreground: False` means Esc may not have arrived: query or screenshot again).
    3. A dialog: `run-task.ps1 wincancel.ps1 -Title "<exact title>"` | `acad-dev.sh cancel "<title>"` (lists visible windows too).
-   WPF dialogs ignore IDCANCEL: `acad-dev.sh cancel "<title>" --close` (WM_CLOSE). 4. Still stuck: `stop-acad.ps1 -Force`
+   WPF dialogs ignore IDCANCEL: `acad-dev.sh cancel "<title>" --close` (WM_CLOSE). A COM attach that fails because a dialog is up
+   is retried automatically after `clear-blockers.ps1` closes the ones it safely can (e.g. Drawing Recovery); if it still fails, the
+   error names the blocker (a **Windows Update "restart to install"** prompt cannot be dismissed from here — dismiss it by hand, or run
+   `harden-automation-vm.ps1` once on a VM you own to stop it). 4. Still stuck: `stop-acad.ps1 -Force`
    | `acad-dev.sh stop --force` (kills AutoCAD; unsaved work is lost, so ask the user first if they have real drawings open), then start again. Never leave a command half-answered.
 7. **Stop**: `.\stop-acad.ps1` | `acad-dev.sh stop`. It quits only if no drawing has unsaved changes and prints
    `REFUSED: unsaved changes in: ...` otherwise. For test drawings you created this session, and only then, use

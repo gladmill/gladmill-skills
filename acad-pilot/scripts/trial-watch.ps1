@@ -7,6 +7,7 @@
 # It never signs in, never enters a licence and does nothing once the window time is over.
 param([string]$Match = '(?i)\btrial\b|days? (left|remaining)|subscribe|buy now|free trial', [int]$WindowMinutes = 5, [string]$LicClass = 'webview')
 . (Join-Path $PSScriptRoot 'common.ps1')
+. (Join-Path $PSScriptRoot 'clear-blockers.ps1')
 Add-Type @"
 using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
 public static class TW {
@@ -24,6 +25,9 @@ $log = Join-Path $script:Out 'startup-windows.log'
 $procs = '^(acad|AdSSO|AdskIdentityManager|AdskAccess.*|AdskLicensing.*|AutodeskDesktopApp|msedgewebview2)$'
 $seen = @{}; $closed = @{}
 while ($true) {
+  # Close COM-blocking nags whenever they appear (not just in the start-up window): mainly the
+  # Drawing Recovery manager after AutoCAD was killed with unsaved drawings.
+  $b = Clear-Blockers; foreach ($t in @($b.closed)) { Add-Content $log ("{0:s} cleared blocker [{1}]" -f (Get-Date), $t) }
   $acad = Get-Process acad -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1
   if ($acad -and ((Get-Date) - $acad.StartTime).TotalMinutes -lt $WindowMinutes) {
     $mainH = [string][long]$acad.MainWindowHandle
