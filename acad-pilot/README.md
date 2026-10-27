@@ -43,9 +43,9 @@ Remote mode (Claude Code on a Mac/Linux/other Windows machine, AutoCAD on a Wind
 |---|---|
 | `ACAD_DEV_HOME` | Work folder on the Windows machine. Default `%USERPROFILE%\acad-dev`. Remote mode: also set it as a user environment variable there. No spaces in remote mode. |
 | `ACAD_DEV_SSH_HOST` | Remote mode: the SSH host of the Windows machine. |
-| `ACAD_DEV_EXE` | Full path to `acad.exe` if the registry lookup finds the wrong one. Same as `start --exe`. |
-| `ACAD_DEV_PRODUCT` | `/product` switch (e.g. `ACAD`) if a vertical product starts instead of plain AutoCAD, or `ACADE` to start AutoCAD Electrical. Same as `start --product`. |
-| `ACAD_DEV_PROFILE` | `/p` switch: the AutoCAD profile to start with. AutoCAD Electrical needs `<<ACADE>>` with `ACAD_DEV_PRODUCT=ACADE`. Same as `start --profile`. |
+| `ACAD_DEV_EXE` | Full path to `acad.exe` if the registry lookup finds the wrong one. Same as `start-acad.ps1 -Exe` / `acad-dev.sh start --exe`. |
+| `ACAD_DEV_PRODUCT` | `/product` switch (e.g. `ACAD`) if a vertical product starts instead of plain AutoCAD, or `ACADE` to start AutoCAD Electrical. Same as `start-acad.ps1 -Product` / `acad-dev.sh start --product`. |
+| `ACAD_DEV_PROFILE` | `/p` switch: the AutoCAD profile to start with. AutoCAD Electrical needs `<<ACADE>>` with `ACAD_DEV_PRODUCT=ACADE`. Same as `start-acad.ps1 -Profile` / `acad-dev.sh start --profile`. |
 | `ACAD_DEV_TRUSTED` | Folders to add to AutoCAD's trusted locations (`TRUSTEDPATHS`) at start, `;`-separated; end one with `\...` to include subfolders. Same as `acad-dev.sh start --trust "..."`. Plugins you load from there skip the "unsigned executable" dialog. You choose these folders: anything that can write to them gets code loaded into AutoCAD. |
 
 ## Optional: trial start-up window
@@ -53,8 +53,9 @@ Remote mode (Claude Code on a Mac/Linux/other Windows machine, AutoCAD on a Wind
 AutoCAD starts. It never signs in. Remove it with `schtasks /delete /tn AcadDevTrialWatch /f`.
 
 ## Troubleshooting
-- `RPC_E_CALL_REJECTED` or a command that never returns: AutoCAD is waiting at a prompt or a dialog. Ask Claude to take a screenshot,
-  then send Esc or cancel the dialog (it knows how). Details: `acad-pilot/references/gotchas.md`.
+- `RPC_E_CALL_REJECTED` or a command that never returns: AutoCAD is usually waiting at a prompt or a dialog. Ask Claude to take a
+  screenshot, then send Esc or cancel the dialog (it knows how). AutoCAD Electrical can also reject calls while it is only busy
+  during a long script. Details: `acad-pilot/references/gotchas.md`.
 - AutoCAD "never becomes ready" after a fresh install: sign in and close the start-up/trial window by hand once.
 - The wrong product starts: set `ACAD_DEV_PRODUCT=ACAD` or `ACAD_DEV_EXE`. For AutoCAD Electrical: `ACAD_DEV_PRODUCT=ACADE` and `ACAD_DEV_PROFILE='<<ACADE>>'`.
   In remote mode the start settings are read on the machine running Claude Code and passed to the Windows box (the box's own

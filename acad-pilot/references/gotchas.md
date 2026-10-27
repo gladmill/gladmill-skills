@@ -49,7 +49,8 @@
 - AutoCAD Electrical 2026 asks at start for the 64-bit **Microsoft 365 Access Runtime** ("Component Updates Required", for the
   Catalog Browser). Installing it (Microsoft's Click-to-Run `AccessRuntimeRetail` x64) stops the dialog.
 - AutoCAD Electrical rejects COM calls (`RPC_E_CALL_REJECTED`) partway through a long batch even with a drawing open, while
-  it is only busy, not waiting at a prompt. Register an OLE message filter in the query that retries rejected calls.
+  it is only busy, not waiting at a prompt. Split the work into smaller queries, or have the query retry a rejected call
+  (in .NET terms, register an `IOleMessageFilter` whose `RetryRejectedCall` asks COM to retry after a short delay).
 - The ribbon, palettes and other UI appear a moment after the drawing opens; a COM query can run before they exist.
 
 ## Misc
