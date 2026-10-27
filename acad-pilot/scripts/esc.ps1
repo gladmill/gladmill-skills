@@ -27,19 +27,26 @@ public static class K {
   [DllImport("user32")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
   [DllImport("user32")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);
-  // AutoCAD's frame: a visible, unowned top-level window of the process, titled "Autodesk AutoCAD ..." when there is one.
+  [DllImport("user32", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);
+  public static string Cls(IntPtr h) { var c = new System.Text.StringBuilder(256); GetClassName(h, c, 256); return c.ToString(); }
+  // AutoCAD's frame: the visible, unowned top-level window of the process of MFC's frame class (AfxMDIFrame140u on AutoCAD 2026;
+  // message boxes are #32770, the WPF helper is HwndWrapper). Fallbacks: a title that starts like a frame's ("Autodesk AutoCAD 2026 - ...",
+  // a vertical's "AutoCAD Electrical 2026 - ..."; not "AutoCAD Message"), then any titled window.
   // Process.MainWindowHandle is not reliable here: it can be an untitled WPF helper window, and Esc sent there is lost.
   public static IntPtr Frame(uint pid) {
-    IntPtr best = IntPtr.Zero, any = IntPtr.Zero;
+    IntPtr frame = IntPtr.Zero, titled = IntPtr.Zero, any = IntPtr.Zero;
+    var frameTitle = new System.Text.RegularExpressions.Regex(@"^(Autodesk )?AutoCAD\b.*\b20\d\d\b");
     EnumWindows((h, l) => {
       uint p; GetWindowThreadProcessId(h, out p);
       if (p != pid || !IsWindowVisible(h) || GetWindow(h, 4) != IntPtr.Zero) return true;   // 4 = GW_OWNER
+      var c = new System.Text.StringBuilder(256); GetClassName(h, c, 256);
+      if (c.ToString().StartsWith("AfxMDIFrame")) { frame = h; return false; }
       var t = new System.Text.StringBuilder(512); GetWindowText(h, t, 512);
-      if (t.ToString().StartsWith("Autodesk AutoCAD")) { best = h; return false; }
+      if (titled == IntPtr.Zero && frameTitle.IsMatch(t.ToString())) titled = h;
       if (any == IntPtr.Zero && t.Length > 0) any = h;
       return true;
     }, IntPtr.Zero);
-    return best != IntPtr.Zero ? best : any;
+    return frame != IntPtr.Zero ? frame : titled != IntPtr.Zero ? titled : any;
   }
 }
 "@
@@ -54,20 +61,26 @@ if ([K]::IsIconic($h)) { [K]::ShowWindow($h, 9) | Out-Null }   # SW_RESTORE
 $me = [K]::GetCurrentThreadId()
 
 function Test-Front {
-  # AutoCAD is in front when the foreground window is its frame or a window the frame owns (a dialog, a floating palette):
-  # real keystrokes then reach AutoCAD. Not any window of the process: an unowned helper window can be in front too.
+  # AutoCAD is in front when the foreground window is its frame, or a dialog (#32770) the frame owns: real keystrokes then
+  # reach the command line or the dialog. Not a floating palette the frame owns (External References, Properties...): Esc
+  # sent there stays in the palette and the command line keeps waiting (seen 2026-10-17). Not any window of the process
+  # either: an unowned helper window can be in front too.
   $fg = [K]::GetForegroundWindow()
-  return ($fg -ne [IntPtr]::Zero -and ($fg -eq $h -or [K]::GetAncestor($fg, 3) -eq $h))   # 3 = GA_ROOTOWNER
+  if ($fg -eq [IntPtr]::Zero) { return $false }
+  if ($fg -eq $h) { return $true }
+  return ([K]::GetAncestor($fg, 3) -eq $h -and [K]::Cls($fg) -eq '#32770')   # 3 = GA_ROOTOWNER
 }
 function Set-Front {
   # Windows only lets the foreground owner (or the process that got the last input) hand over focus. Attaching to the
   # foreground thread covers the first case, an Alt tap (key down + up, no menu opens) the second. The Alt tap goes to the
-  # window in front, which is never AutoCAD here (Set-Front only runs when AutoCAD is not in front), so it cannot turn on
+  # window in front, which is never AutoCAD's here (skipped when one of AutoCAD's palettes is in front), so it cannot turn on
   # AutoCAD's ribbon KeyTips and eat an Esc.
   $fg = [K]::GetForegroundWindow()
   $t = if ($fg -ne [IntPtr]::Zero) { [K]::GetWindowThreadProcessId($fg, [IntPtr]::Zero) } else { 0 }
   $att = ($t -ne 0 -and $t -ne $me) -and [K]::AttachThreadInput($me, $t, $true)
-  [K]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [K]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)   # VK_MENU down, up
+  # A palette of AutoCAD's own in front: AutoCAD's process already owns the foreground, so no Alt tap (it could reach AutoCAD)
+  $ours = $fg -ne [IntPtr]::Zero -and [K]::GetAncestor($fg, 3) -eq $h
+  if (-not $ours) { [K]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [K]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero) }   # VK_MENU down, up
   [K]::BringWindowToTop($h) | Out-Null
   [K]::SetForegroundWindow($h) | Out-Null
   if ($att) { [K]::AttachThreadInput($me, $t, $false) | Out-Null }

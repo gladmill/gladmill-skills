@@ -43,6 +43,14 @@
   run `harden-automation-vm.ps1` once (opt-in: turns off automatic installs and restarts and pauses updates).
 - A vertical product (Electrical, Mechanical...) is what `acad.exe` starts on such installs; `/product ACAD` may not change that.
   Use `ACAD_DEV_PRODUCT` and check `$acad.Name`/`$acad.Version` in a query.
+- To start AutoCAD Electrical, pass `/product ACADE` **and** its profile `/p "<<ACADE>>"` (`start --product ACADE --profile
+  '<<ACADE>>'`), the switches its desktop shortcut uses. `$acad.Name` still reads "AutoCAD" under Electrical: look for the
+  Electrical ribbon tabs (Project, Schematic, Panel) in a screenshot instead.
+- AutoCAD Electrical 2026 asks at start for the 64-bit **Microsoft 365 Access Runtime** ("Component Updates Required", for the
+  Catalog Browser). Installing it (Microsoft's Click-to-Run `AccessRuntimeRetail` x64) stops the dialog.
+- AutoCAD Electrical rejects COM calls (`RPC_E_CALL_REJECTED`) partway through a long batch even with a drawing open, while
+  it is only busy, not waiting at a prompt. Split the work into smaller queries, or have the query retry a rejected call
+  (in .NET terms, register an `IOleMessageFilter` whose `RetryRejectedCall` asks COM to retry after a short delay).
 - The ribbon, palettes and other UI appear a moment after the drawing opens; a COM query can run before they exist.
 
 ## Misc

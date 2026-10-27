@@ -61,7 +61,10 @@ function Invoke-InSession {
       if ((Get-Date) -gt $deadline) { 'TIMEOUT waiting for the task'; break }
       Start-Sleep -Milliseconds 500
     }
-  } finally { schtasks /delete /tn $TaskName /f 2>$null | Out-Null }
+  } finally {
+    schtasks /delete /tn $TaskName /f 2>$null | Out-Null
+    $global:LASTEXITCODE = 0   # schtasks' code is not the caller's result: a script that ends here must not exit with it
+  }
 }
 
 function Save-Screenshot {
