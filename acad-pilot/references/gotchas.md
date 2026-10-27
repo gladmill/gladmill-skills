@@ -33,6 +33,14 @@
 - A trial/new install shows a start-up window (and a sign-in) that blocks COM. A person signs in once. `trial-watch.ps1` can close
   the trial splash (find what to match in `out\startup-windows.log`); it cannot and must not sign in.
 - "Component Updates Required" and similar modal dialogs: screenshot, then `wincancel`.
+- **AutoCAD's Drawing Recovery windows** appear when AutoCAD restarts after a crash with unsaved drawings, and a run can't use the
+  drawing until they're closed. `clear-blockers.ps1` closes them (acad.exe windows titled "Drawing Recovery...", WM_CLOSE, which
+  a dialog normally treats as Cancel), `acad-cmd.ps1` runs it before attaching and retries a failed attach, and `trial-watch.ps1`
+  runs it in its start-up window. Closing the window should leave the recovered files where AutoCAD keeps them (untested here);
+  reopen them by hand (DRAWINGRECOVERY) if you need them.
+- **Windows Update** can restart an unattended box or show a "restart to install" prompt, which belongs to another process and can't
+  be dismissed from the automation session. `clear-blockers.ps1` reports one when it sees it; dismiss it by hand, or on a VM you own
+  run `harden-automation-vm.ps1` once (opt-in: turns off automatic installs and restarts and pauses updates).
 - A vertical product (Electrical, Mechanical...) is what `acad.exe` starts on such installs; `/product ACAD` may not change that.
   Use `ACAD_DEV_PRODUCT` and check `$acad.Name`/`$acad.Version` in a query.
 - The ribbon, palettes and other UI appear a moment after the drawing opens; a COM query can run before they exist.
