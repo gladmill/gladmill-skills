@@ -59,7 +59,10 @@ Every example below shows local (PowerShell, from the `scripts` folder) then rem
    Recipes: [references/com-recipes.md](references/com-recipes.md). Queries are read-only unless you mean otherwise.
 5. **Screenshot**: `.\run-task.ps1 shot.ps1` then `<home>\out\shot.png` | `acad-dev.sh shot ./shot.png`. Look at it (Read tool)
    when the log does not explain the state. `run` also leaves `out\screen.png` (`acad-dev.sh screen`).
-6. **Stuck? (COM hangs, `RPC_E_CALL_REJECTED`, `TIMEOUT`)** AutoCAD is at a prompt or a modal dialog.
+6. **Stuck? (COM hangs, `RPC_E_CALL_REJECTED`, `TIMEOUT`)** AutoCAD is at a prompt or a modal dialog. `run`/`query` already
+   retry a call AutoCAD rejects as merely busy (up to `ACAD_DEV_COM_RETRY_SEC`, default 30 s), so a `RPC_E_CALL_REJECTED` from
+   them after that wait usually means a dialog, unless the result says `com retry off`. Rejections from `wait`/`start` are
+   normal while AutoCAD starts. Screenshot before pressing Esc: Esc cancels a long command that is only busy.
    1. Screenshot (no COM needed). 2. `run-task.ps1 esc.ps1` | `acad-dev.sh esc` (leaves a prompt; exit 3 / `foreground: False` means Esc may not have arrived: query or screenshot again).
    3. A dialog: `run-task.ps1 wincancel.ps1 -Title "<exact title>"` | `acad-dev.sh cancel "<title>"` (lists visible windows too).
    WPF dialogs ignore IDCANCEL: `acad-dev.sh cancel "<title>" --close` (WM_CLOSE). Before attaching, `run`/`query` close AutoCAD's

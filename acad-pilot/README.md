@@ -46,6 +46,7 @@ Remote mode (Claude Code on a Mac/Linux/other Windows machine, AutoCAD on a Wind
 | `ACAD_DEV_EXE` | Full path to `acad.exe` if the registry lookup finds the wrong one. Same as `start-acad.ps1 -Exe` / `acad-dev.sh start --exe`. |
 | `ACAD_DEV_PRODUCT` | `/product` switch (e.g. `ACAD`) if a vertical product starts instead of plain AutoCAD, or `ACADE` to start AutoCAD Electrical. Same as `start-acad.ps1 -Product` / `acad-dev.sh start --product`. |
 | `ACAD_DEV_PROFILE` | `/p` switch: the AutoCAD profile to start with. AutoCAD Electrical needs `<<ACADE>>` with `ACAD_DEV_PRODUCT=ACADE`. Same as `start-acad.ps1 -Profile` / `acad-dev.sh start --profile`. |
+| `ACAD_DEV_COM_RETRY_SEC` | How long a COM call AutoCAD rejects as busy (`RPC_E_CALL_REJECTED`) is retried before it fails, in seconds. Default 30, at most 600; 0 turns retrying off. Read on the Windows machine (remote mode: set it there as a user environment variable). |
 | `ACAD_DEV_TRUSTED` | Folders to add to AutoCAD's trusted locations (`TRUSTEDPATHS`) at start, `;`-separated; end one with `\...` to include subfolders. Same as `acad-dev.sh start --trust "..."`. Plugins you load from there skip the "unsigned executable" dialog. You choose these folders: anything that can write to them gets code loaded into AutoCAD. |
 
 ## Optional: trial start-up window
@@ -54,8 +55,8 @@ AutoCAD starts. It never signs in. Remove it with `schtasks /delete /tn AcadDevT
 
 ## Troubleshooting
 - `RPC_E_CALL_REJECTED` or a command that never returns: AutoCAD is usually waiting at a prompt or a dialog. Ask Claude to take a
-  screenshot, then send Esc or cancel the dialog (it knows how). AutoCAD Electrical can also reject calls while it is only busy
-  during a long script. Details: `acad-pilot/references/gotchas.md`.
+  screenshot, then send Esc or cancel the dialog (it knows how). AutoCAD Electrical also rejects calls while it is only busy
+  (long scripts, closing drawings); `run`/`query` retry those for up to `ACAD_DEV_COM_RETRY_SEC` seconds (default 30). Details: `acad-pilot/references/gotchas.md`.
 - AutoCAD "never becomes ready" after a fresh install: sign in and close the start-up/trial window by hand once.
 - The wrong product starts: set `ACAD_DEV_PRODUCT=ACAD` or `ACAD_DEV_EXE`. For AutoCAD Electrical: `ACAD_DEV_PRODUCT=ACADE` and `ACAD_DEV_PROFILE='<<ACADE>>'`.
   In remote mode the start settings are read on the machine running Claude Code and passed to the Windows box (the box's own

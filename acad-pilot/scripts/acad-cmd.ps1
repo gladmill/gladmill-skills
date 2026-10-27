@@ -40,6 +40,10 @@ try {
   # Only commands need a drawing; a query (e.g. stop, close-all) must work from the Start tab with none open.
   if (-not $doc -and $Cmds) { W "no active doc, adding one"; $doc = $acad.Documents.Add(); Start-Sleep 5; $doc = try { $acad.ActiveDocument } catch { $null } }
   W "acad: $($acad.Version) doc: $($doc.Name)"
+  # From here on (the query and the commands), calls AutoCAD rejects as busy are retried (common.ps1). Registered only now, so
+  # a blocked attach still goes to the dialog-clearing loop above and a dialog that is already up affects the reads above as before
+  # instead of costing the retry wait on each.
+  $why = Register-ComRetry; if ($why) { W $why }
   if ($HasQuery) {
     $q = Join-Path $script:Home_ 'query.ps1'
     foreach ($l in (. $q | Out-String -Width 200) -split "`r?`n") { if ($l) { W $l } }

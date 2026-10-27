@@ -67,6 +67,49 @@ function Invoke-InSession {
   }
 }
 
+function Register-ComRetry {
+  # Makes this thread's COM calls retry while AutoCAD rejects them as busy (RPC_E_CALL_REJECTED, SERVERCALL_RETRYLATER),
+  # instead of failing: AutoCAD Electrical rejects calls partway through a long batch and right after closing drawings. An
+  # OLE message filter retries every 100 ms for up to $env:ACAD_DEV_COM_RETRY_SEC seconds (default 30, 0 = off, at most 600),
+  # then the call fails as before. A call blocked by a modal dialog can take that long to fail; a call made while a command
+  # waits at a prompt is not rejected, it hangs until the prompt is answered (Esc). Needs an STA thread (Windows PowerShell
+  # 5.1's default). For the kit's own one-shot workers: the filter stays for the life of the process and replaces any filter
+  # already on the thread. Never throws; returns '' when registered as set, else a note to log.
+  $sec = 30; $note = ''
+  $v = "$env:ACAD_DEV_COM_RETRY_SEC".Trim()
+  if ($v) {
+    if ($v -match '^\d{1,6}$' -and [int]$v -le 600) { $sec = [int]$v }
+    else { $note = "ACAD_DEV_COM_RETRY_SEC='$v' ignored (whole seconds 0-600); " }
+  }
+  if ($sec -eq 0) { return "${note}com retry off (ACAD_DEV_COM_RETRY_SEC=0)" }
+  if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') { return "${note}com retry off: not an STA thread" }
+  try {
+    if (-not ('AcadDevComRetry' -as [type])) {
+      Add-Type @'
+using System; using System.Runtime.InteropServices;
+[ComImport, Guid("00000016-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IAcadDevMessageFilter {
+  [PreserveSig] int HandleInComingCall(int callType, IntPtr caller, int tick, IntPtr info);
+  [PreserveSig] int RetryRejectedCall(IntPtr callee, int elapsedMs, int rejectType);
+  [PreserveSig] int MessagePending(IntPtr callee, int elapsedMs, int pendingType); }
+public class AcadDevComRetry : IAcadDevMessageFilter {
+  [DllImport("ole32.dll")] static extern int CoRegisterMessageFilter(IAcadDevMessageFilter f, out IAcadDevMessageFilter old);
+  public static int MaxMs = 30000;
+  public static int Register() { IAcadDevMessageFilter old; return CoRegisterMessageFilter(new AcadDevComRetry(), out old); }
+  public int HandleInComingCall(int callType, IntPtr caller, int tick, IntPtr info) { return 0; }   // SERVERCALL_ISHANDLED
+  // rejectType 2 = SERVERCALL_RETRYLATER (busy): retry in 100 ms until MaxMs; anything else (or -1) cancels the call
+  public int RetryRejectedCall(IntPtr callee, int elapsedMs, int rejectType) { return (rejectType == 2 && elapsedMs < MaxMs) ? 100 : -1; }
+  public int MessagePending(IntPtr callee, int elapsedMs, int pendingType) { return 2; }   // PENDINGMSG_WAITDEFPROCESS
+}
+'@
+    }
+    [AcadDevComRetry]::MaxMs = $sec * 1000
+    $hr = [AcadDevComRetry]::Register()
+  } catch { return "${note}com retry off: $($_.Exception.Message.Split("`n")[0])" }
+  if ($hr -ne 0) { return ("${note}com retry off: CoRegisterMessageFilter returned 0x{0:X8}" -f $hr) }
+  return $note.TrimEnd('; ')
+}
+
 function Save-Screenshot {
   param([string]$Path)
   Add-Type -AssemblyName System.Windows.Forms, System.Drawing
