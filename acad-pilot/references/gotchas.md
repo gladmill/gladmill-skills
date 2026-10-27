@@ -18,7 +18,8 @@
 
 ## COM
 - COM calls hang or are rejected (`RPC_E_CALL_REJECTED`, 0x80010001) while AutoCAD waits at a prompt or shows a modal dialog,
-  or while it is still starting. Never leave a command half-answered. `esc.ps1` gets out of a prompt; `shot.ps1` shows the screen.
+  or while it is still starting. At a prompt a call usually just waits; a call rejected as busy is retried for up to 30 s (see
+  the AutoCAD Electrical note below) before it fails. Never leave a command half-answered. `esc.ps1` gets out of a prompt; `shot.ps1` shows the screen.
   After a restart wait with `wait-acad.ps1` before the first COM call.
 - Avoid typing AutoLISP through the chain: quotes break and an unterminated string leaves AutoCAD waiting for input. Read state with a COM query file.
 - `SetVariable` needs the variable's type: `[int16]0` for `DYNMODE`, `FILEDIA`; `[int32]` for the longs. A plain PowerShell int fails.
@@ -48,9 +49,11 @@
   Electrical ribbon tabs (Project, Schematic, Panel) in a screenshot instead.
 - AutoCAD Electrical 2026 asks at start for the 64-bit **Microsoft 365 Access Runtime** ("Component Updates Required", for the
   Catalog Browser). Installing it (Microsoft's Click-to-Run `AccessRuntimeRetail` x64) stops the dialog.
-- AutoCAD Electrical rejects COM calls (`RPC_E_CALL_REJECTED`) partway through a long batch even with a drawing open, while
-  it is only busy, not waiting at a prompt. Split the work into smaller queries, or have the query retry a rejected call
-  (in .NET terms, register an `IOleMessageFilter` whose `RetryRejectedCall` asks COM to retry after a short delay).
+- AutoCAD Electrical rejects COM calls (`RPC_E_CALL_REJECTED`) while it is only busy, not waiting at a prompt: partway through
+  a long batch, and reliably right after closing drawings. `run`/`query` handle this: `acad-cmd.ps1` registers an OLE message
+  filter (`Register-ComRetry` in `common.ps1`) that retries a rejected call every 100 ms for up to `ACAD_DEV_COM_RETRY_SEC`
+  seconds (default 30; 0 turns it off). A script of your own that talks COM outside `acad-cmd.ps1` can dot-source
+  `common.ps1` and call `Register-ComRetry` after attaching.
 - The ribbon, palettes and other UI appear a moment after the drawing opens; a COM query can run before they exist.
 
 ## Misc

@@ -67,6 +67,41 @@ function Invoke-InSession {
   }
 }
 
+function Register-ComRetry {
+  # Makes this thread's COM calls retry while AutoCAD rejects them as busy (RPC_E_CALL_REJECTED, SERVERCALL_RETRYLATER),
+  # instead of failing: AutoCAD Electrical rejects calls partway through a long batch even with a drawing open. An OLE message
+  # filter retries every 100 ms for up to $env:ACAD_DEV_COM_RETRY_SEC seconds (default 30, 0 = off), then the call fails as
+  # before. At a prompt or modal dialog a call therefore fails only after that wait. Needs an STA thread (Windows PowerShell
+  # 5.1's default). Returns '' when registered or off, else why not.
+  $sec = 30
+  if ("$env:ACAD_DEV_COM_RETRY_SEC" -match '^\d+$') { $sec = [int]$env:ACAD_DEV_COM_RETRY_SEC }
+  if ($sec -eq 0) { return '' }
+  if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') { return 'com retry off: not an STA thread' }
+  if (-not ('AcadDevComRetry' -as [type])) {
+    Add-Type @'
+using System; using System.Runtime.InteropServices;
+[ComImport, Guid("00000016-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IAcadDevMessageFilter {
+  [PreserveSig] int HandleInComingCall(int callType, IntPtr caller, int tick, IntPtr info);
+  [PreserveSig] int RetryRejectedCall(IntPtr callee, int elapsedMs, int rejectType);
+  [PreserveSig] int MessagePending(IntPtr callee, int elapsedMs, int pendingType); }
+public class AcadDevComRetry : IAcadDevMessageFilter {
+  [DllImport("ole32.dll")] static extern int CoRegisterMessageFilter(IAcadDevMessageFilter f, out IAcadDevMessageFilter old);
+  public static int MaxMs = 30000;
+  public static int Register() { IAcadDevMessageFilter old; return CoRegisterMessageFilter(new AcadDevComRetry(), out old); }
+  public int HandleInComingCall(int callType, IntPtr caller, int tick, IntPtr info) { return 0; }   // SERVERCALL_ISHANDLED
+  // rejectType 2 = SERVERCALL_RETRYLATER (busy): retry in 100 ms until MaxMs; anything else (or -1) cancels the call
+  public int RetryRejectedCall(IntPtr callee, int elapsedMs, int rejectType) { return (rejectType == 2 && elapsedMs < MaxMs) ? 100 : -1; }
+  public int MessagePending(IntPtr callee, int elapsedMs, int pendingType) { return 2; }   // PENDINGMSG_WAITDEFPROCESS
+}
+'@
+  }
+  [AcadDevComRetry]::MaxMs = $sec * 1000
+  $hr = [AcadDevComRetry]::Register()
+  if ($hr -ne 0) { return ('com retry off: CoRegisterMessageFilter returned 0x{0:X8}' -f $hr) }
+  return ''
+}
+
 function Save-Screenshot {
   param([string]$Path)
   Add-Type -AssemblyName System.Windows.Forms, System.Drawing
