@@ -1,15 +1,15 @@
 # Clears or reports the dialogs that block AutoCAD's COM automation.
 #
-# Some Windows dialogs steal the message pump so AutoCAD stops answering COM: the call fails with
-# MK_E_UNAVAILABLE (COM unavailable) or RPC_E_CALL_REJECTED (busy / at a prompt), and a run dies with
-# a raw HRESULT. This is not AutoCAD's fault and not ours, but it breaks unattended runs, so the kit
-# closes the ones it safely can and names the ones it cannot.
+# A modal window of AutoCAD's can keep it from answering COM, and an unattended run then dies with a raw
+# HRESULT. The kit closes the ones it safely can and names the ones it cannot.
 #
-# Auto-closed (AutoCAD's own non-destructive nags): the "Drawing Recovery" manager that pops up after
-# AutoCAD was killed with unsaved drawings. Trial / sign-in start-up windows are handled by trial-watch.ps1.
-# Reported but NOT touched: the Windows Update "restart to install" prompt (drawn by a higher-integrity
-# system process — it cannot be dismissed from this session; see harden-automation-vm.ps1 to stop it
-# appearing on a VM you own) and anything that could lose work (a "Save changes?" prompt is left alone).
+# Auto-closed: AutoCAD's "Drawing Recovery" windows, which appear when AutoCAD restarts after a crash with
+# unsaved drawings. Only windows of acad.exe itself whose title starts "Drawing Recovery" are closed, with
+# WM_CLOSE (a dialog treats it as Cancel); a browser or folder with that title is never touched.
+# Trial / sign-in start-up windows are handled by trial-watch.ps1.
+# Reported but NOT touched: a Windows Update "restart to install" prompt (another process; it cannot be
+# dismissed from this session, see harden-automation-vm.ps1 for a VM you own) and anything that could lose
+# work (a "Save changes?" prompt is left alone).
 #
 # Dot-source for the Clear-Blockers function, or run directly to clear once and print a summary.
 
@@ -27,13 +27,13 @@ public static class CB {
 "@
 
 function Clear-Blockers {
-  # -CloseTitles: window titles (regex, start-anchored) to close with WM_CLOSE. Default: Drawing Recovery.
+  # -CloseTitles: titles (regex, start-anchored) of acad.exe windows to close with WM_CLOSE. Default: Drawing Recovery.
   param([string[]]$CloseTitles = @('Drawing Recovery'))
   $closed = @(); $manual = @()
   $names = @{}; Get-Process -ErrorAction SilentlyContinue | ForEach-Object { $names[[string]$_.Id] = $_.Name }
   foreach ($w in [CB]::All()) {
     $title = $w[2]; $proc = $names[$w[1]]
-    if ($title -and ($CloseTitles | Where-Object { $title -match "^$_" })) {
+    if ($proc -eq 'acad' -and $title -and ($CloseTitles | Where-Object { $title -match "^$_" })) {
       [CB]::PostMessage([IntPtr][long]$w[0], 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null   # WM_CLOSE
       $closed += $title
     }

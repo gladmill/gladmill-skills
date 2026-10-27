@@ -33,13 +33,13 @@
 - A trial/new install shows a start-up window (and a sign-in) that blocks COM. A person signs in once. `trial-watch.ps1` can close
   the trial splash (find what to match in `out\startup-windows.log`); it cannot and must not sign in.
 - "Component Updates Required" and similar modal dialogs: screenshot, then `wincancel`.
-- **Windows (OS) dialogs can block COM too, not just AutoCAD's.** The **Drawing Recovery** manager pops up after AutoCAD is
-  killed with unsaved drawings and blocks COM until closed; `clear-blockers.ps1` closes it (WM_CLOSE), and `acad-cmd.ps1` runs it
-  and retries when a COM attach fails, so a run usually self-heals. `trial-watch.ps1` also closes it each loop. The **Windows Update
-  "restart to install" prompt** is the exception: it is drawn by a higher-integrity system process, so it cannot be closed, clicked
-  or UI-automated from the automation session — a blocked attach reports it by name (`out\shot.png` shows it) and you dismiss it by
-  hand, or prevent it on a VM you own with `harden-automation-vm.ps1` (opt-in; stops forced restarts and the prompt). This is a
-  Windows limitation, not an AutoCAD or kit bug, but it still breaks unattended runs, so the kit clears what it can and names the rest.
+- **AutoCAD's Drawing Recovery windows** appear when AutoCAD restarts after a crash with unsaved drawings, and a run can't use the
+  drawing until they're closed. `clear-blockers.ps1` closes them (acad.exe windows titled "Drawing Recovery...", WM_CLOSE, i.e.
+  Cancel), `acad-cmd.ps1` runs it before attaching and retries a failed attach, and `trial-watch.ps1` runs it in its start-up window.
+  The recovered files stay where AutoCAD keeps them; reopen them by hand (DRAWINGRECOVERY) if you need them.
+- **Windows Update** can restart an unattended box or show a "restart to install" prompt, which belongs to another process and can't
+  be dismissed from the automation session. `clear-blockers.ps1` reports one when it sees it; dismiss it by hand, or on a VM you own
+  run `harden-automation-vm.ps1` once (opt-in: turns off automatic installs and restarts and pauses updates).
 - A vertical product (Electrical, Mechanical...) is what `acad.exe` starts on such installs; `/product ACAD` may not change that.
   Use `ACAD_DEV_PRODUCT` and check `$acad.Name`/`$acad.Version` in a query.
 - The ribbon, palettes and other UI appear a moment after the drawing opens; a COM query can run before they exist.

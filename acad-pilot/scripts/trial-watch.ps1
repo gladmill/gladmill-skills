@@ -4,7 +4,8 @@
 # (title, class, process) and posts WM_CLOSE (then IDCANCEL) to those whose title looks like the trial screen. Tune -Match from
 # the log if a start-up window is missed. The licensing agent's untitled window of class "webview" is closed by process and class.
 # It never closes AutoCAD's main window or a drawing window (it skips the acad main frame and 'Autodesk AutoCAD ... - [' titles).
-# It never signs in, never enters a licence and does nothing once the window time is over.
+# In the same window it also closes AutoCAD's Drawing Recovery windows (clear-blockers.ps1: acad.exe windows only), which
+# appear when AutoCAD restarts after a crash. It never signs in, never enters a licence and does nothing once the window time is over.
 param([string]$Match = '(?i)\btrial\b|days? (left|remaining)|subscribe|buy now|free trial', [int]$WindowMinutes = 5, [string]$LicClass = 'webview')
 . (Join-Path $PSScriptRoot 'common.ps1')
 . (Join-Path $PSScriptRoot 'clear-blockers.ps1')
@@ -25,11 +26,9 @@ $log = Join-Path $script:Out 'startup-windows.log'
 $procs = '^(acad|AdSSO|AdskIdentityManager|AdskAccess.*|AdskLicensing.*|AutodeskDesktopApp|msedgewebview2)$'
 $seen = @{}; $closed = @{}
 while ($true) {
-  # Close COM-blocking nags whenever they appear (not just in the start-up window): mainly the
-  # Drawing Recovery manager after AutoCAD was killed with unsaved drawings.
-  $b = Clear-Blockers; foreach ($t in @($b.closed)) { Add-Content $log ("{0:s} cleared blocker [{1}]" -f (Get-Date), $t) }
   $acad = Get-Process acad -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1
   if ($acad -and ((Get-Date) - $acad.StartTime).TotalMinutes -lt $WindowMinutes) {
+    $b = Clear-Blockers; foreach ($t in @($b.closed)) { Add-Content $log ("{0:s} cleared blocker [{1}]" -f (Get-Date), $t) }
     $mainH = [string][long]$acad.MainWindowHandle
     $names = @{}; Get-Process | ForEach-Object { $names[[string]$_.Id] = $_.Name }
     foreach ($w in [TW]::All()) {
