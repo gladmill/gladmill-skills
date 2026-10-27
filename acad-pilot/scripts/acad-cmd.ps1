@@ -36,13 +36,14 @@ try {
             else { "a modal dialog is likely open (Drawing Recovery, a licence/sign-in window, or a command waiting at a prompt)" }
     throw "AutoCAD is not answering COM: $hint. See the screenshot in out\screen.png (acad-dev.sh screen), dismiss it, and retry."
   }
-  # From here on, calls AutoCAD rejects as busy are retried (common.ps1). Registered after the attach so a blocked attach
-  # still fails fast into the dialog-clearing loop above.
-  $why = Register-ComRetry; if ($why) { W $why }
   $doc = try { $acad.ActiveDocument } catch { $null }   # COM can throw when no drawing is open (Start tab)
   # Only commands need a drawing; a query (e.g. stop, close-all) must work from the Start tab with none open.
   if (-not $doc -and $Cmds) { W "no active doc, adding one"; $doc = $acad.Documents.Add(); Start-Sleep 5; $doc = try { $acad.ActiveDocument } catch { $null } }
   W "acad: $($acad.Version) doc: $($doc.Name)"
+  # From here on (the query and the commands), calls AutoCAD rejects as busy are retried (common.ps1). Registered only now, so
+  # a blocked attach still goes to the dialog-clearing loop above and a dialog that is already up affects the reads above as before
+  # instead of costing the retry wait on each.
+  $why = Register-ComRetry; if ($why) { W $why }
   if ($HasQuery) {
     $q = Join-Path $script:Home_ 'query.ps1'
     foreach ($l in (. $q | Out-String -Width 200) -split "`r?`n") { if ($l) { W $l } }

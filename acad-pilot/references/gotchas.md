@@ -18,8 +18,8 @@
 
 ## COM
 - COM calls hang or are rejected (`RPC_E_CALL_REJECTED`, 0x80010001) while AutoCAD waits at a prompt or shows a modal dialog,
-  or while it is still starting. At a prompt a call usually just waits; a call rejected as busy is retried for up to 30 s (see
-  the AutoCAD Electrical note below) before it fails. Never leave a command half-answered. `esc.ps1` gets out of a prompt; `shot.ps1` shows the screen.
+  or while it is still starting. At a prompt a call usually just waits (hangs until the prompt is answered); in `run`/`query`
+  a call rejected as busy is retried first (see the AutoCAD Electrical note below), so at a dialog it fails only after that wait. Never leave a command half-answered. `esc.ps1` gets out of a prompt; `shot.ps1` shows the screen.
   After a restart wait with `wait-acad.ps1` before the first COM call.
 - Avoid typing AutoLISP through the chain: quotes break and an unterminated string leaves AutoCAD waiting for input. Read state with a COM query file.
 - `SetVariable` needs the variable's type: `[int16]0` for `DYNMODE`, `FILEDIA`; `[int32]` for the longs. A plain PowerShell int fails.
@@ -52,8 +52,11 @@
 - AutoCAD Electrical rejects COM calls (`RPC_E_CALL_REJECTED`) while it is only busy, not waiting at a prompt: partway through
   a long batch, and reliably right after closing drawings. `run`/`query` handle this: `acad-cmd.ps1` registers an OLE message
   filter (`Register-ComRetry` in `common.ps1`) that retries a rejected call every 100 ms for up to `ACAD_DEV_COM_RETRY_SEC`
-  seconds (default 30; 0 turns it off). A script of your own that talks COM outside `acad-cmd.ps1` can dot-source
-  `common.ps1` and call `Register-ComRetry` after attaching.
+  seconds (default 30, at most 600; 0 turns it off), and `trust-paths.ps1` (`start -Trust`) does the same. A setting it can't
+  use, or a filter it can't register, shows as a `com retry off` / `ignored` line in the result. The retry applies to the
+  query and commands, not to the attach and the first reads before them.
+- After a `TIMEOUT` the worker may still be running in the session (the task is deleted, its process is not), and it can
+  write into the next run's result. Wait out the retry window, or check with a screenshot, before the next `run`.
 - The ribbon, palettes and other UI appear a moment after the drawing opens; a COM query can run before they exist.
 
 ## Misc
