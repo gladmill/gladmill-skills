@@ -15,13 +15,18 @@
 # closes the trial window and the Drawing Recovery manager.
 param([int]$PauseDays = 35)
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'common.ps1')
+$beforeFile = Join-Path $script:Out 'harden-before.txt'   # the first run's values; a later run would record its own
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
   'Run this in an elevated PowerShell (Run as administrator).'; exit 1
 }
 function Show-Old($key, $name) {
   $v = (Get-ItemProperty $key -Name $name -ErrorAction SilentlyContinue).$name
-  "before: $key $name = $(if ($null -eq $v) { '(not set)' } else { $v })"
+  $line = "before: $key $name = $(if ($null -eq $v) { '(not set)' } else { $v })"
+  if (-not $script:keepBefore) { Add-Content $beforeFile $line }
+  $line
 }
+$script:keepBefore = Test-Path $beforeFile   # already hardened once: keep the original values on file
 $au = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
 if (-not (Test-Path $au)) { New-Item -Path $au -Force | Out-Null }   # New-Item -Force on an existing key would wipe its values
 Show-Old $au NoAutoRebootWithLoggedOnUsers; Show-Old $au AUOptions
@@ -32,5 +37,5 @@ if (-not (Test-Path $ux)) { New-Item -Path $ux -Force | Out-Null }
 Show-Old $ux PauseUpdatesExpiryTime
 $until = (Get-Date).ToUniversalTime().AddDays([Math]::Min($PauseDays, 35)).ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture)
 Set-ItemProperty $ux PauseUpdatesExpiryTime $until -Type String
-"hardened: no automatic installs or restarts; updates paused until $until (UTC)"
-"to undo: set the values back to the 'before' lines above (remove those that were not set)"
+"hardened: no automatic installs (AUOptions=2) or restarts while logged on; update pause requested until $until (UTC)"
+"to undo: set the values back to the 'before' lines in $beforeFile (remove those that were not set)"
