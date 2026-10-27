@@ -72,3 +72,12 @@
   titled `Autodesk AutoCAD ...` (as `esc.ps1` does).
 - **One driver at a time.** All calls share the work folder (`cmds.txt`, `query.ps1`, `out\`) and the scheduled-task names. Two sessions or agents driving the same AutoCAD at once overwrite each other's files and tasks, and calls time out. Run one at a time.
 - Do not type AutoLISP to read a variable (`(getvar "FILEDIA")` left on the command line without Enter blocks the next command); use a COM query: `$doc.GetVariable('FILEDIA')`.
+
+## SDI mode
+`SDI` = 0 multiple drawings; 1 single (user setting); 2, 3 single, forced by a loaded app (read-only). Treat any non-zero as SDI. Seen on AutoCAD Electrical 2026 with `SDI=1`:
+- AutoCAD always has exactly one drawing open, and starts with `Drawing1` (no Start tab). `stop-acad`, `run` and `start -Trust` work as usual.
+- `Documents.Add()` throws `0x80210071` "Method not available in SDI mode". `ActiveDocument.New('')` replaces the drawing with a blank one (about 1.3 s, `Documents.Count` stays 1).
+- `Documents.Open(path)` and `New('')` replace the current drawing and, if it has unsaved changes, block on a modal "Save changes?" dialog (the COM call hangs). Don't call them on an unsaved drawing.
+- `Close()` / `Close($false)` on the only drawing **quits AutoCAD**, with no prompt even when unsaved. Don't send `CLOSE` in SDI mode either: it quits AutoCAD; `NEW` / `OPEN` replace the drawing and prompt to save if unsaved.
+- To discard unsaved changes without quitting: `SaveAs` to a temp file, `New('')`, delete the temp file (and its `.bak`). The original file on disk is untouched (`queries/q-discardall.ps1`).
+- `q-newdoc`, `q-closeall` and `q-discardall` do the right thing in both modes (`Get-AcadSdi` in `common.ps1`). With no drawing open `SDI` can't be read; that only happens in MDI, so it counts as 0.

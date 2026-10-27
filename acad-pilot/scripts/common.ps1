@@ -110,6 +110,14 @@ public class AcadDevComRetry : IAcadDevMessageFilter {
   return $note.TrimEnd('; ')
 }
 
+function Get-AcadSdi {
+  # AutoCAD's SDI system variable as an int: 0 = multiple drawings (MDI); non-zero = single-drawing mode (1 set by the user;
+  # 2, 3 forced by a loaded app, read-only). 0 when it can't be read: with no drawing open ActiveDocument throws, and that
+  # only happens in MDI. In SDI mode AutoCAD always keeps exactly one drawing and Documents.Add() / Close() don't work as in MDI.
+  param($Acad)
+  try { return [int]$Acad.ActiveDocument.GetVariable('SDI') } catch { return 0 }
+}
+
 function Save-Screenshot {
   param([string]$Path)
   Add-Type -AssemblyName System.Windows.Forms, System.Drawing
