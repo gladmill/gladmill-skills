@@ -8,7 +8,7 @@ interactive session (local mode) and through a one-shot interactive scheduled ta
 |---|---|
 | `acad-dev.sh <cmd>` | Remote mode wrapper for Mac/Linux/WSL (needs `ACAD_DEV_SSH_HOST`): `install`, `start`, `wait`, `stop`, `run`, `query`, `shot`, `screen`, `esc`, `cancel`, `fetch`. Run without arguments for help. |
 | `common.ps1` | Shared helpers: work folder, `Test-Interactive`, `Find-Acad` (registry, 2024-2026, or `ACAD_DEV_EXE`), `Invoke-InSession`, `Save-Screenshot`. |
-| `start-acad.ps1 [-Exe] [-Product] [-TimeoutSec]` | Starts AutoCAD in the interactive session and waits until it is ready. `ACAD_DEV_EXE`, `ACAD_DEV_PRODUCT` override. |
+| `start-acad.ps1 [-Exe] [-Product] [-Profile] [-Trust] [-TimeoutSec]` | Starts AutoCAD in the interactive session and waits until it is ready. `ACAD_DEV_EXE`, `ACAD_DEV_PRODUCT`, `ACAD_DEV_PROFILE` (`/p`) override; `acad-dev.sh start` passes its own `--exe`/`--product`/`--profile` or local `ACAD_DEV_*`. `-Trust` / `ACAD_DEV_TRUSTED`: folders added to `TRUSTEDPATHS` once ready (via `trust-paths.ps1`). |
 | `wait-acad.ps1 [-TimeoutSec 240]` | Returns `ready after Ns` (exit 0) when AutoCAD answers over COM and is quiescent; exit 1 on timeout with the last state. |
 | `acad-ready.ps1` | Task-side probe used by `wait-acad.ps1`: writes `ready`, `busy` or `none: <reason>` to `out\ready.txt`. |
 | `stop-acad.ps1 [-DiscardChanges] [-Force]` | Quits AutoCAD. Default refuses (prints `REFUSED`) if any drawing has unsaved changes; `-DiscardChanges` closes them without saving first; `-Force` kills a hung AutoCAD. |
@@ -25,5 +25,5 @@ interactive session (local mode) and through a one-shot interactive scheduled ta
 | `queries/q-closeall.ps1` | Query: close all drawings, refusing if any has unsaved changes. |
 | `queries/q-discardall.ps1` | Query: close all drawings without saving (test drawings only). |
 
-Settings: `ACAD_DEV_HOME`, `ACAD_DEV_SSH_HOST` (remote), `ACAD_DEV_EXE`, `ACAD_DEV_PRODUCT`, `ACAD_DEV_FORCE_TASK=1` (force the scheduled-task path).
+Settings: `ACAD_DEV_HOME`, `ACAD_DEV_SSH_HOST` (remote), `ACAD_DEV_EXE`, `ACAD_DEV_PRODUCT`, `ACAD_DEV_PROFILE`, `ACAD_DEV_TRUSTED`, `ACAD_DEV_FORCE_TASK=1` (force the scheduled-task path).
 In remote mode set `ACAD_DEV_HOME` as a user environment variable on the Windows machine (`setx ACAD_DEV_HOME D:\acad-dev`).

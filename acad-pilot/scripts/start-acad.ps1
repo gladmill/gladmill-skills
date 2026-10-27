@@ -1,15 +1,22 @@
 # Starts AutoCAD in the interactive session and waits until it is ready (wait-acad.ps1). Works locally and from SSH.
 #   -Exe      acad.exe (default: ACAD_DEV_EXE, else found in the registry: newest of 2024-2026)
 #   -Product  /product switch (default: ACAD_DEV_PRODUCT; empty = none). Use ACAD if a vertical (e.g. Electrical) starts instead.
+#   -Profile  /p switch, the profile to start with (default: ACAD_DEV_PROFILE; empty = none). AutoCAD Electrical's desktop
+#             shortcut uses -Product ACADE -Profile '<<ACADE>>'.
 #   -Trust    folders to add to TRUSTEDPATHS once AutoCAD is ready, ';'-separated (default: ACAD_DEV_TRUSTED; empty = none).
 #             End a folder with \... to include its subfolders. Plugins loaded from there skip the unsigned-file dialog.
-param([string]$Exe = '', [string]$Product = $env:ACAD_DEV_PRODUCT, [string]$Trust = $env:ACAD_DEV_TRUSTED, [int]$TimeoutSec = 240)
+param([string]$Exe = '', [string]$Product = $env:ACAD_DEV_PRODUCT, [string]$Profile = $env:ACAD_DEV_PROFILE, [string]$Trust = $env:ACAD_DEV_TRUSTED, [int]$TimeoutSec = 240)
 . (Join-Path $PSScriptRoot 'common.ps1')
-if (Get-Process acad -EA SilentlyContinue) { 'acad already running' }
+if (Get-Process acad -EA SilentlyContinue) {
+  'acad already running'
+  if ($PSBoundParameters.Keys | Where-Object { $_ -in 'Exe', 'Product', 'Profile' }) { 'note: -Exe/-Product/-Profile apply only to a new AutoCAD; stop this one first to use them' }
+}
 else {
+  if ($Exe -and -not (Test-Path $Exe)) { "acad.exe not found: $Exe"; exit 1 }
   if (-not $Exe) { $Exe = Find-Acad }
   if (-not $Exe) { 'acad.exe not found: set ACAD_DEV_EXE'; exit 1 }
   $sw = if ($Product) { " /product $Product" } else { '' }
+  if ($Profile) { $sw += " /p `"$Profile`"" }
   if (Test-Interactive) {
     if ($sw) { Start-Process $Exe -ArgumentList $sw.Trim() } else { Start-Process $Exe }
   } else {

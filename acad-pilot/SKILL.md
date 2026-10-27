@@ -38,7 +38,9 @@ Every example below shows local (PowerShell, from the `scripts` folder) then rem
      picks trusted folders; never add one on your own to get past the unsigned-file dialog.
    - Already running? `.\wait-acad.ps1` | `acad-dev.sh wait`. Never sleep or watch window titles instead.
    - acad.exe is found via the registry (newest of 2024-2026) or `ACAD_DEV_EXE`. If a vertical product starts (Electrical,
-     Mechanical), set `ACAD_DEV_PRODUCT=ACAD`.
+     Mechanical), set `ACAD_DEV_PRODUCT=ACAD`. To start a vertical on purpose, pass its product and profile, as its desktop
+     shortcut does: AutoCAD Electrical is `start --product ACADE --profile '<<ACADE>>'` (or `ACAD_DEV_PRODUCT` and
+     `ACAD_DEV_PROFILE`). In remote mode these and `ACAD_DEV_EXE` are read on the machine running `acad-dev.sh`.
    - First start on a trial/new install: a person must sign in once. `install-trial-watch.ps1` (optional) closes the trial
      splash window only; it never signs in or enters licences.
 2. **Open a drawing**: run a query that does `$acad.Documents.Add()` in a call of its own

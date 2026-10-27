@@ -6,8 +6,10 @@
 #   ACAD_DEV_HOME       optional: work folder ON THE WINDOWS BOX (default %USERPROFILE%\acad-dev). Set it there as a user env var too.
 # Usage: acad-dev.sh <command> [args]
 #   install                     copy the scripts to the box (run once, and after updating the kit)
-#   start [timeoutSec] [--trust "C:\a\...;C:\b"]   start AutoCAD in the interactive session and wait until it is ready;
-#                               --trust (or ACAD_DEV_TRUSTED) adds those folders to TRUSTEDPATHS (saved in the AutoCAD profile)
+#   start [timeoutSec] [--trust "C:\a\...;C:\b"] [--product P] [--profile P] [--exe path]   start AutoCAD in the interactive
+#                               session and wait until it is ready; --trust (or ACAD_DEV_TRUSTED) adds those folders to TRUSTEDPATHS
+#                               (saved in the AutoCAD profile); --product, --profile, --exe (or ACAD_DEV_PRODUCT, ACAD_DEV_PROFILE,
+#                               ACAD_DEV_EXE here) become /product, /p and the acad.exe used; unset, the box's own variables apply
 #   wait [timeoutSec]           wait until AutoCAD answers over COM and is quiescent
 #   stop [--discard|--force]    quit AutoCAD (refuses if a drawing has unsaved changes; --discard throws them away, --force kills a hung AutoCAD)
 #   run "<cmds>" [--query f.ps1] [--wait n] [--timeout s]   send commands ('|' separates, \n = Enter), optional COM query; prints the log tail
@@ -37,8 +39,16 @@ winhome() {
 H="$(winhome)" || { echo "cannot reach $HOST over ssh" >&2; exit 2; }
 [ -n "$H" ] || { echo "cannot reach $HOST over ssh" >&2; exit 2; }
 HW="${H//\//\\}"
-# psa <script> [args]: run an installed script; its exit code is passed through
-psa() { local s="$1"; shift; rps "& '$HW\\scripts\\$s' $*; if (\$LASTEXITCODE) { exit \$LASTEXITCODE } elseif (-not \$?) { exit 1 }"; }
+# psa <script> [args]: run an installed script; its exit code is passed through. ssh alone reports 0/1 when the box's default
+# shell is PowerShell (it collapses the inner powershell's code), so the code travels as a last output line, which is removed.
+psa() {
+  local s="$1"; shift
+  rps "& '$HW\\scripts\\$s' $*; \$c = if (\$LASTEXITCODE) { \$LASTEXITCODE } elseif (-not \$?) { 1 } else { 0 }; \"__ACAD_DEV_RC=\$c\"; exit \$c" |
+    awk '/^__ACAD_DEV_RC=[0-9]+\r?$/ { gsub(/[^0-9]/, ""); rc = $0; seen = 1; next } { print; fflush() } END { exit seen ? rc : 99 }'
+  local st=("${PIPESTATUS[@]}")
+  if [ "${st[1]}" = 99 ]; then [ "${st[0]}" = 0 ] && return 1; return "${st[0]}"; fi   # no code line: ssh or powershell failed
+  return "${st[1]}"
+}
 # fresh <remote file rel. to home>: delete the previous output before a task, so a stale file is never mistaken for a new one
 fresh() { rps "Remove-Item '$HW\\$1' -Force -ErrorAction SilentlyContinue"; }
 
@@ -49,10 +59,28 @@ case "$cmd" in
     scp -q "$here"/*.ps1 "$here"/*.vbs "$HOST:$H/scripts/" && scp -q "$here"/queries/*.ps1 "$HOST:$H/scripts/queries/" \
       && echo "installed to $HW\\scripts" || { echo "scp failed" >&2; exit 2; } ;;
   start)
-    tmo=240; trust="${ACAD_DEV_TRUSTED:-}"
-    while [ $# -gt 0 ]; do case "$1" in --trust) [ $# -ge 2 ] || { echo "--trust needs a value" >&2; exit 2; }; trust="$2"; shift ;; *) tmo="$1" ;; esac; shift; done
-    [[ "$trust" == *"'"* ]] && { echo "--trust: no single quotes in paths" >&2; exit 2; }
-    if [ -n "$trust" ]; then psa start-acad.ps1 -TimeoutSec "$tmo" -Trust "'$trust'"; else psa start-acad.ps1 -TimeoutSec "$tmo"; fi ;;
+    tmo=240; trust="${ACAD_DEV_TRUSTED:-}"; product="${ACAD_DEV_PRODUCT:-}"; profile="${ACAD_DEV_PROFILE:-}"; exe="${ACAD_DEV_EXE:-}"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --trust|--product|--profile|--exe)
+          [ $# -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
+          case "$1" in --trust) trust="$2" ;; --product) product="$2" ;; --profile) profile="$2" ;; --exe) exe="$2" ;; esac; shift ;;
+        *) [[ "$1" =~ ^[0-9]+$ ]] || { echo "start: unknown argument '$1' (expected timeoutSec, --trust, --product, --profile, --exe)" >&2; exit 2; }
+           tmo="$1" ;;
+      esac; shift
+    done
+    # the values travel inside single-quoted PowerShell strings; the box's own ACAD_DEV_* apply to anything left empty here
+    args=(-TimeoutSec "$tmo")
+    for kv in "Trust=$trust" "Product=$product" "Profile=$profile" "Exe=$exe"; do
+      k="${kv%%=*}"; v="${kv#*=}"; [ -n "$v" ] || continue
+      # PowerShell also ends a '...' literal at the curly single quotes
+      case "$v" in *"'"*|*‘*|*’*|*‚*|*‛*) echo "$(printf '%s' "$k" | tr 'A-Z' 'a-z'): no single quotes" >&2; exit 2 ;; esac
+      # both land in the box's start-acad.cmd: /product unquoted (a plain name only), /p "..." quoted (no " or %)
+      if [ "$k" = Product ] && ! [[ "$v" =~ ^[A-Za-z0-9_]+$ ]]; then echo "product: letters, digits and _ only" >&2; exit 2; fi
+      if [ "$k" = Profile ] && [[ "$v" == *[\"%]* ]]; then echo "profile: no \" or %" >&2; exit 2; fi
+      args+=("-$k" "'$v'")
+    done
+    psa start-acad.ps1 "${args[@]}" ;;
   wait) psa wait-acad.ps1 -TimeoutSec "${1:-240}" ;;
   stop) case "${1:-}" in --force) psa stop-acad.ps1 -Force ;; --discard) psa stop-acad.ps1 -DiscardChanges ;; *) psa stop-acad.ps1 ;; esac ;;
   run|query)
@@ -89,5 +117,5 @@ case "$cmd" in
     fresh out/result.txt; fresh out/done.txt; psa run-task.ps1 wincancel.ps1
     rps "if ((Test-Path '$HW\\out\\done.txt') -and (Test-Path '$HW\\out\\result.txt')) { Get-Content '$HW\\out\\result.txt' } else { exit 1 }" || { echo "cancel produced no fresh result (task failed or timed out)" >&2; exit 1; } ;;
   fetch) scp -q "$HOST:$H/${1:?remote path}" "${2:-.}" ;;
-  *) sed -n 2,22p "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,/^set -uo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
