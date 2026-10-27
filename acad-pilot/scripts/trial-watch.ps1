@@ -3,7 +3,8 @@
 # every visible top-level window of AutoCAD and the Autodesk licensing/sign-in helpers, logs new ones to <home>\out\startup-windows.log
 # (title, class, process) and posts WM_CLOSE (then IDCANCEL) to those whose title looks like the trial screen. Tune -Match from
 # the log if a start-up window is missed. The licensing agent's untitled window of class "webview" is closed by process and class.
-# It never closes AutoCAD's main window or a drawing window (it skips the acad main frame and 'Autodesk AutoCAD ... - [' titles).
+# It never closes AutoCAD's main window or a drawing window (it skips AutoCAD's frame by window class and '... AutoCAD ... - [' titles,
+# so verticals such as 'AutoCAD Electrical 2026 - [x]' are spared too).
 # In the same window it also closes AutoCAD's Drawing Recovery windows (clear-blockers.ps1: acad.exe windows only), which
 # appear when AutoCAD restarts after a crash. It never signs in, never enters a licence and does nothing once the window time is over.
 param([string]$Match = '(?i)\btrial\b|days? (left|remaining)|subscribe|buy now|free trial', [int]$WindowMinutes = 5, [string]$LicClass = 'webview')
@@ -33,7 +34,8 @@ while ($true) {
     $names = @{}; Get-Process | ForEach-Object { $names[[string]$_.Id] = $_.Name }
     foreach ($w in [TW]::All()) {
       $name = $names[$w[1]]; if ($name -notmatch $procs) { continue }
-      if ($w[0] -eq $mainH -or $w[3] -match '^Autodesk AutoCAD.* - \[') { continue }   # never touch AutoCAD's own frame or a drawing window
+      # never touch AutoCAD's own frame (MFC frame class; MainWindowHandle can be a WPF helper) or a drawing window
+      if ($w[0] -eq $mainH -or ($name -eq 'acad' -and $w[2] -like 'AfxMDIFrame*') -or $w[3] -match '^(Autodesk )?AutoCAD.* - \[') { continue }
       $key = "$($w[0])|$($w[3])"
       if (-not $seen[$key]) { $seen[$key] = 1; Add-Content $log ("{0:s} {1} class={2} title=[{3}]" -f (Get-Date), $name, $w[2], $w[3]) }
       $trial = ($w[3] -match $Match -and $w[3] -notmatch 'UNREGISTERED VERSION') -or ($name -eq 'AdskLicensingAgent' -and $w[2] -eq $LicClass -and $w[3] -eq '')

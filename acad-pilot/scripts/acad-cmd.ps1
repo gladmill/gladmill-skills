@@ -47,6 +47,8 @@ try {
   if ($Cmds) {
     if ($doc.GetVariable('LOGFILEMODE') -ne 1) { $doc.SetVariable('LOGFILEMODE', 1) }
     $logdir = $doc.GetVariable('LOGFILEPATH'); W "logpath: $logdir"
+    # The log is named after the drawing when logging started, so take the name before a command can rename it (SAVEAS).
+    $pat = '^' + [regex]::Escape([IO.Path]::GetFileNameWithoutExtension($doc.Name)) + '_[0-9a-f]+\.log$'
     foreach ($c in ($Cmds -split '\|')) {
       if ($c -eq '') { continue }
       W ">> $c"
@@ -55,7 +57,11 @@ try {
     }
     Start-Sleep -Seconds 1
     $doc.SetVariable('LOGFILEMODE', 0)   # closes the log so it is flushed
-    $log = Get-ChildItem $logdir -Filter *.log | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    # Each open drawing writes its own <drawing>_<hex>.log, so with several open the newest log can be another drawing's.
+    # Take the newest log of the drawing the commands went to; fall back to the newest log and say so.
+    $logs = @(Get-ChildItem $logdir -Filter *.log | Sort-Object LastWriteTime -Descending)
+    $log = $logs | Where-Object { $_.Name -match $pat } | Select-Object -First 1
+    if (-not $log) { $log = $logs | Select-Object -First 1; W "(no log named for $($doc.Name); showing the newest)" }
     W "--- $($log.Name) (tail) ---"; Get-Content $log.FullName -Tail 40 | ForEach-Object { W $_ }
     $doc.SetVariable('LOGFILEMODE', 1)
   }
