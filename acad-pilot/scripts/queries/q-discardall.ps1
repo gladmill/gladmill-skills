@@ -8,7 +8,8 @@ if (Get-AcadSdi $acad) {
     $tmp = Join-Path $env:TEMP ("acad-dev-discard-{0}.dwg" -f [guid]::NewGuid().ToString('N'))
     $d.SaveAs($tmp)
   }
-  [void]$d.New('')
+  try { [void]$d.New('') }
+  catch { if ($tmp) { throw "New failed after the temp save; the open drawing is now $tmp (discard it before using it): $($_.Exception.Message)" }; throw }
   if ($tmp) { Remove-Item $tmp, ($tmp -replace '\.dwg$', '.bak') -EA SilentlyContinue }
   "SDI mode: AutoCAD keeps one drawing; replaced $old with a blank drawing" + $(if ($tmp) { ', discarding its unsaved changes' } else { ' (it had no unsaved changes)' })
 } else {

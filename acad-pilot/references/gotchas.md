@@ -79,5 +79,5 @@
 - `Documents.Add()` throws `0x80210071` "Method not available in SDI mode". `ActiveDocument.New('')` replaces the drawing with a blank one (about 1.3 s, `Documents.Count` stays 1).
 - `Documents.Open(path)` and `New('')` replace the current drawing and, if it has unsaved changes, block on a modal "Save changes?" dialog (the COM call hangs). Don't call them on an unsaved drawing.
 - `Close()` / `Close($false)` on the only drawing **quits AutoCAD**, with no prompt even when unsaved. Avoid sending the `CLOSE` command in SDI mode too (not tested; expect it to quit AutoCAD); `NEW` / `OPEN` replace the drawing and prompt to save if unsaved.
-- To discard unsaved changes without quitting: `SaveAs` to a temp file, `New('')`, delete the temp file (and its `.bak`). The original file on disk is untouched (`queries/q-discardall.ps1`).
+- To discard unsaved changes without quitting: `SaveAs` to a temp file, `New('')`, delete the temp file (and its `.bak`). The original file on disk is untouched (`queries/q-discardall.ps1`). Tested on drawings outside an AutoCAD Electrical project; a project drawing's save hooks may prompt.
 - `q-newdoc`, `q-closeall` and `q-discardall` do the right thing in both modes (`Get-AcadSdi` in `common.ps1`). With no drawing open `SDI` can't be read; that only happens in MDI, so it counts as 0.
