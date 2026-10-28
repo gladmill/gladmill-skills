@@ -20,10 +20,10 @@ interactive session (local mode) and through a one-shot interactive scheduled ta
 | `wincancel.ps1 [-Title t] [-Close]` | Posts IDCANCEL (or WM_CLOSE with `-Close`, for WPF dialogs) to a window with that exact title; lists visible windows; screenshot. |
 | `run-hidden.vbs <command...>` | Runs a command with no console window (used by every scheduled task). |
 | `trial-watch.ps1`, `install-trial-watch.ps1` | Optional: logon task `AcadDevTrialWatch` that closes AutoCAD's trial start-up window for 5 minutes after AutoCAD starts. Never signs in. Remove: `schtasks /delete /tn AcadDevTrialWatch /f` and stop its powershell. |
-| `queries/q-newdoc.ps1` | Query: open a new drawing (run it in a call of its own). |
-| `queries/q-ents.ps1` | Query: model-space entity counts by type, some system variables, open drawings. |
-| `queries/q-closeall.ps1` | Query: close all drawings, refusing if any has unsaved changes. |
-| `queries/q-discardall.ps1` | Query: close all drawings without saving (test drawings only). |
+| `queries/q-newdoc.ps1` | Query: open a new drawing (run it in a call of its own). SDI mode: replaces the drawing, refuses if unsaved. |
+| `queries/q-ents.ps1` | Query: model-space entity counts by type, some system variables (incl. `SDI`), open drawings. |
+| `queries/q-closeall.ps1` | Query: close all drawings, refusing if any has unsaved changes. SDI mode: replaces the drawing with a blank one (closing it would quit AutoCAD). |
+| `queries/q-discardall.ps1` | Query: close all drawings without saving (test drawings only). SDI mode: replaces the drawing with a blank one. |
 
 Settings: `ACAD_DEV_HOME`, `ACAD_DEV_SSH_HOST` (remote), `ACAD_DEV_EXE`, `ACAD_DEV_PRODUCT`, `ACAD_DEV_PROFILE`, `ACAD_DEV_TRUSTED`, `ACAD_DEV_FORCE_TASK=1` (force the scheduled-task path).
 In remote mode set `ACAD_DEV_HOME` as a user environment variable on the Windows machine (`setx ACAD_DEV_HOME D:\acad-dev`).

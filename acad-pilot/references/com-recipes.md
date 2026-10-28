@@ -57,3 +57,13 @@ for ($i = 0; $i -lt 30 -and $doc.GetVariable('CMDNAMES'); $i++) { Start-Sleep 1 
 ```powershell
 foreach ($d in @($acad.Documents)) { $d.Close($false) }    # queries/q-discardall.ps1 (q-closeall.ps1 first checks $d.Saved)
 ```
+In SDI mode (`$doc.GetVariable('SDI')` non-zero) that quits AutoCAD: it keeps one drawing. Replace it instead (only if `$d.Saved`,
+else `New` blocks on a "Save changes?" dialog; to discard changes `SaveAs` a temp file first, as q-discardall.ps1 does):
+```powershell
+[void]$acad.ActiveDocument.New('')    # blank drawing replaces the current one; Documents.Count stays 1
+```
+
+## New drawing
+```powershell
+$acad.Documents.Add()                 # MDI. Throws 0x80210071 in SDI mode: use ActiveDocument.New('') (see above)
+```

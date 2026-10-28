@@ -57,6 +57,9 @@ AutoCAD starts. It never signs in. Remove it with `schtasks /delete /tn AcadDevT
 - `RPC_E_CALL_REJECTED` or a command that never returns: AutoCAD is usually waiting at a prompt or a dialog. Ask Claude to take a
   screenshot, then send Esc or cancel the dialog (it knows how). AutoCAD Electrical also rejects calls while it is only busy
   (long scripts, closing drawings); `run`/`query` retry those for up to `ACAD_DEV_COM_RETRY_SEC` seconds (default 30). Details: `acad-pilot/references/gotchas.md`.
+- AutoCAD quits when the drawings are closed, or `Documents.Add()` fails with "Method not available in SDI mode": AutoCAD is in
+  single-drawing mode (`SDI` is non-zero). Use the kit's `q-newdoc`, `q-closeall` and `q-discardall` queries (they replace the
+  drawing instead) and don't send `CLOSE`. Details: `references/gotchas.md`, "SDI mode".
 - AutoCAD "never becomes ready" after a fresh install: sign in and close the start-up/trial window by hand once.
 - The wrong product starts: set `ACAD_DEV_PRODUCT=ACAD` or `ACAD_DEV_EXE`. For AutoCAD Electrical: `ACAD_DEV_PRODUCT=ACADE` and `ACAD_DEV_PROFILE='<<ACADE>>'`.
   In remote mode the start settings are read on the machine running Claude Code and passed to the Windows box (the box's own

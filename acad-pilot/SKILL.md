@@ -45,6 +45,8 @@ Every example below shows local (PowerShell, from the `scripts` folder) then rem
      splash window only; it never signs in or enters licences.
 2. **Open a drawing**: run a query that does `$acad.Documents.Add()` in a call of its own
    (`queries\q-newdoc.ps1`). Commands sent in the same call go to the document that was active before the query.
+   In SDI mode (`SDI` non-zero; `q-ents` prints it) AutoCAD keeps one drawing: the query replaces it with a blank one
+   instead, and refuses if it has unsaved changes. See `references/gotchas.md`, "SDI mode".
 3. **Send commands**
    - `.\run-in-session.ps1 -Cmds '_LINE\n0,0\n100,100\n\n' -WaitSec 2` | `acad-dev.sh run '_LINE\n0,0\n100,100\n\n' --wait 2`
    - `|` separates commands (each is a `SendCommand` call), `\n` = Enter. A command is not complete until all its
@@ -74,7 +76,8 @@ Every example below shows local (PowerShell, from the `scripts` folder) then rem
    `REFUSED: unsaved changes in: ...` otherwise. For test drawings you created this session, and only then, use
    `-DiscardChanges` | `stop --discard`. If a drawing you didn't create has changes, ask the user before discarding anything.
 8. **Close drawings**: `queries\q-closeall.ps1` (refuses on unsaved changes, like stop). Test drawings you created:
-   `queries\q-discardall.ps1` closes them without saving.
+   `queries\q-discardall.ps1` closes them without saving. In SDI mode both replace the one drawing with a blank
+   one instead (closing it would quit AutoCAD), so a drawing stays open.
 
 Simulated mouse clicks do not reach the session (SetCursorPos/mouse_event); posted window messages do. Don't plan around clicking.
 
