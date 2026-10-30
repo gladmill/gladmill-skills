@@ -159,8 +159,9 @@ public static class KitUi {
 
   // ---- foreground ----------------------------------------------------------------------------------------------
   // Windows lets only the foreground owner (or the process that got the last input) hand over the foreground: attach to the
-  // foreground thread first; if that is not enough, tap Alt (a hidden task got no input yet) and tap it again, so the ribbon's
-  // key tips that the first tap may show are gone again (they would eat typed letters). No Esc: it would cancel a command.
+  // foreground thread first; if that is not enough, tap Alt (a hidden task got no input yet). The tap goes to the window in
+  // front, so it is skipped when that is one of the target's own process (it would turn on the ribbon's key tips, which eat
+  // typed letters). No Esc: it would cancel a command.
   public static bool Front(IntPtr h) { return Front(h, true); }
   // alt = false: only the quiet attempt (attach to the foreground thread). The Alt tap puts AutoCAD into menu mode for a moment, which
   // a recorder watching AutoCAD (Retrace) sees as a modal window.
@@ -170,11 +171,10 @@ public static class KitUi {
     for (int attempt = 0; attempt < (alt ? 2 : 1); attempt++) {
       IntPtr fg = GetForegroundWindow(); uint me = GetCurrentThreadId(), t = fg == IntPtr.Zero ? 0 : Thread(fg);
       bool att = t != 0 && t != me && AttachThreadInput(me, t, true);
-      if (attempt == 1) { keybd_event(0x12, 0, 0, UIntPtr.Zero); keybd_event(0x12, 0, 2, UIntPtr.Zero); }
+      if (attempt == 1 && (fg == IntPtr.Zero || Pid(fg) != Pid(h))) { keybd_event(0x12, 0, 0, UIntPtr.Zero); keybd_event(0x12, 0, 2, UIntPtr.Zero); }
       BringWindowToTop(h); SetForegroundWindow(h);
       if (att) AttachThreadInput(me, t, false);
       System.Threading.Thread.Sleep(250);
-      if (attempt == 1 && GetForegroundWindow() == h) { keybd_event(0x12, 0, 0, UIntPtr.Zero); keybd_event(0x12, 0, 2, UIntPtr.Zero); }
       if (GetForegroundWindow() == h) return true;
     }
     return false;
@@ -260,6 +260,7 @@ public static class KitUi {
   public static List<KitCtl> Controls(IntPtr dlg) {
     var all = new List<KitCtl>();
     foreach (var h in Kids(dlg)) {
+      if (Cls(GetParent(h)).ToLowerInvariant().Contains("combobox")) continue;   // the edit inside an editable drop-down: the combo is the control
       var k = new KitCtl(); k.H = h; k.Cls = Cls(h); k.Style = Style(h); k.Id = CtrlId(h);
       k.Kind = KindOf(h, k.Cls, k.Style); k.Visible = IsWindowVisible(h); k.Enabled = IsWindowEnabled(h);
       k.Text = (k.Kind == "edit" || k.Kind == "combo" || k.Kind == "list") ? "" : Text(h);
@@ -355,7 +356,8 @@ public static class KitUi {
     return SendInt(k.H, BM_GETCHECK, 0, 0) == 1 ? null : "the radio button did not change";
   }
   public static string SetCombo(KitCtl k, string v) {
-    IntPtr r; SMTs(k.H, CB_FINDSTRINGEXACT, new IntPtr(-1), v, SMTO_ABORTIFHUNG, 2000, out r); int i = r.ToInt32();
+    IntPtr r; if (SMTs(k.H, CB_FINDSTRINGEXACT, new IntPtr(-1), v, SMTO_ABORTIFHUNG, 2000, out r) == IntPtr.Zero) return "the dialog did not answer (busy?)";
+    int i = r.ToInt32();
     if (i < 0) {
       if ((k.Style & 0x3) == 2 || (k.Style & 0x3) == 1) { SetText(k.H, v); Notify(k, 5); return null; }   // editable: type it (CBN_EDITCHANGE)
       return "no item '" + v + "' (items: " + string.Join(" | ", Items(k).ToArray()) + ")";
@@ -366,7 +368,7 @@ public static class KitUi {
   public static string SetList(KitCtl k, string[] vals) {
     var idx = new List<int>();
     foreach (var v in vals) {
-      IntPtr r; SMTs(k.H, LB_FINDSTRINGEXACT, new IntPtr(-1), v, SMTO_ABORTIFHUNG, 2000, out r);
+      IntPtr r; if (SMTs(k.H, LB_FINDSTRINGEXACT, new IntPtr(-1), v, SMTO_ABORTIFHUNG, 2000, out r) == IntPtr.Zero) return "the dialog did not answer (busy?)";
       int i = r.ToInt32(); if (i < 0) return "no item '" + v + "' (items: " + string.Join(" | ", Items(k).ToArray()) + ")";
       idx.Add(i);
     }
@@ -631,6 +633,10 @@ function Click-Elem($e, $what) {
     [KitUi]::Front($frame, $false) | Out-Null; Start-Sleep -Milliseconds 200; $root = [KitUi]::RootAt($x, $y)   # no Alt tap: a recorder would log it
   }
   if ($root -ne $frame -and [KitUi]::Pid($root) -ne $apid) { return "$what at $x,$y is covered by another program's window [$([KitUi]::Caption($root))] class=$([KitUi]::Cls($root))" }
+  # AutoCAD's own windows: only the frame or a ribbon popup (a slide-out: a WPF window owned by the frame) may take the click, not a floating palette
+  if ($root -ne $frame -and -not ([KitUi]::Cls($root) -like 'HwndWrapper*' -and [KitUi]::GetWindow($root, 4) -eq $frame)) {
+    return "$what at $x,$y is covered by AutoCAD's window [$([KitUi]::Caption($root))] class=$([KitUi]::Cls($root)): move or close it"
+  }
   [KitUi]::Click($x, $y)
   return $null
 }
@@ -685,12 +691,14 @@ function Do-Ribbon($n, $step, $path) {
 
 # ---- commands -----------------------------------------------------------------------------------------------------------
 # AutoCAD over COM, only to ask whether it is quiescent (no command, prompt or dialog active). Answers while a command waits.
-$script:acad = $null
+$script:acad = $null; $script:comErr = ''
 function Quiescent {
   try {
-    if (-not $script:acad) { $script:acad = [Runtime.InteropServices.Marshal]::GetActiveObject('AutoCAD.Application'); Register-ComRetry | Out-Null }
+    # no COM retry filter (Register-ComRetry) here: a call AutoCAD rejects as busy must answer "busy" at once, not after 30 s
+    if (-not $script:acad) { $script:comErr = 'COM: AutoCAD.Application not reachable'; $script:acad = [Runtime.InteropServices.Marshal]::GetActiveObject('AutoCAD.Application') }
+    $script:comErr = ''
     return [bool]$script:acad.GetAcadState().IsQuiescent
-  } catch { $script:acad = $null; return $false }
+  } catch { if ($script:comErr) { $script:comErr += " ($($_.Exception.Message))" }; $script:acad = $null; return $false }
 }
 # After a click or typed command: wait (up to $sec) until AutoCAD has taken it, i.e. is busy or shows a dialog, then a moment for the
 # prompt to settle. Text typed before that can be lost (a ribbon macro starts with ^C^C, which cancels what is pending).
@@ -763,7 +771,7 @@ foreach ($step in $steps) {
       'command' {
         if (-not $arg) { Fail $n $step 'command needs the text to send' }
         if (-not [KitUi]::IsWindowEnabled($frame)) { Fail $n $step ('a modal dialog is open; a command typed now would wait behind it: ' + ((List-Dialogs) -join '; ')) }
-        if (-not (Until { Quiescent } ([Math]::Min(5, $script:stepTimeout)))) { Fail $n $step 'AutoCAD is busy: a command or prompt is active (finish it, use type to answer it, or press Esc with esc.ps1)' }
+        if (-not (Until { Quiescent } ([Math]::Min(5, $script:stepTimeout)))) { Fail $n $step $(if ($script:comErr) { "AutoCAD's state can't be read: $($script:comErr)" } else { 'AutoCAD is busy: a command or prompt is active (finish it, use type to answer it, or press Esc with esc.ps1)' }) }
         Mouse-Off-Ribbon
         if (-not [KitUi]::TypeText($frame, (Cmd-Text $arg))) { Fail $n $step 'AutoCAD did not take the text (its window did not answer)' }
         $msg = if (Wait-Started) { 'started' } else { 'sent (already finished, or not started: idle and read the result)' }
@@ -780,7 +788,7 @@ foreach ($step in $steps) {
         $sec = if ($arg -match '^\d+$') { [int]$arg } else { $script:stepTimeout }
         # free = no modal dialog (the main window is enabled) and AutoCAD quiescent twice in a row; modeless windows may stay open
         $q = Until { if ([KitUi]::IsWindowEnabled($frame) -and (Quiescent)) { Start-Sleep -Milliseconds 300; if (Quiescent) { $true } } } $sec
-        if (-not $q) { Fail $n $step ("AutoCAD is still busy after ${sec}s (a prompt, or: " + ((List-Dialogs) -join '; ') + ')') }
+        if (-not $q) { Fail $n $step $(if ($script:comErr) { "AutoCAD's state can't be read: $($script:comErr)" } else { "AutoCAD is still busy after ${sec}s (a prompt, or: " + ((List-Dialogs) -join '; ') + ')' }) }
         $msg = 'AutoCAD is free'
       }
       'ribbon' { $msg = Do-Ribbon $n $step $arg }
@@ -801,8 +809,10 @@ foreach ($step in $steps) {
       'dialogs' { foreach ($l in (List-Dialogs)) { W "  $l" }; $msg = 'listed' }
       'expect' {
         $t = Need-Target $n $step
-        $text = @([KitUi]::Caption($t)) + (Texts $t) + (Read-Target $t)
-        $ok = Until { $all = (@([KitUi]::Caption($t)) + (Texts $t) + (Read-Target $t)) -join "`n"; if ($all -match $arg) { $true } } ([Math]::Min(3, $script:stepTimeout))
+        # the title, texts and values; not the drop-downs' and lists' other items (`expect Doors` must not pass on an unselected item)
+        $seen = { @([KitUi]::Caption($t)) + (Texts $t) + @((Read-Target $t) -replace '  items: .*$', '') }
+        $text = & $seen
+        $ok = Until { $all = (& $seen) -join "`n"; if ($all -match $arg) { $true } } ([Math]::Min(3, $script:stepTimeout))
         if (-not $ok) { Fail $n $step ("no match for /$arg/ in: " + (($text | Select-Object -Unique) -join ' / ')) }
         $msg = 'matched'
       }
@@ -851,7 +861,12 @@ foreach ($step in $steps) {
             $first = $true
             foreach ($it in $items) {
               $ie = [KitUi]::Descendants($e, 1000) | Where-Object { [KitUi]::TypeName($_) -in 'ListItem', 'DataItem' -and [KitUi]::Match([KitUi]::Name($_), $it) -gt 0 } | Select-Object -First 1
-              if (-not $ie) { if ($ec) { try { $ec.Collapse() } catch { } }; Fail $n $step "no item '$it' in '$label'" }
+              if (-not $ie) {
+                if ($ec) { try { $ec.Collapse() } catch { } }
+                $tv = [KitUi]::Pattern($e, [System.Windows.Automation.ValuePattern]::Pattern)
+                if ($ty -eq 'ComboBox' -and $items.Count -eq 1 -and $tv -and -not $tv.Current.IsReadOnly) { $tv.SetValue($it); $ec = $null; break }   # editable: type it
+                Fail $n $step "no item '$it' in '$label'"
+              }
               $si = [KitUi]::Pattern($ie, [System.Windows.Automation.SelectionItemPattern]::Pattern)
               if ($first) { $si.Select() } else { $si.AddToSelection() }; $first = $false
             }
@@ -861,9 +876,12 @@ foreach ($step in $steps) {
           }
           default {
             $vp = [KitUi]::Pattern($e, [System.Windows.Automation.ValuePattern]::Pattern)
-            if (-not $vp) { Fail $n $step "'$label' ($ty) takes no typed value" }
+            $rp = if (-not $vp) { [KitUi]::Pattern($e, [System.Windows.Automation.RangeValuePattern]::Pattern) }
+            $num = 0.0
+            if ($rp -and -not [double]::TryParse($val, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$num)) { Fail $n $step "'$label' ($ty) takes a number, not '$val'" }
+            if (-not $vp -and -not $rp) { Fail $n $step "'$label' ($ty) takes no typed value" }
             try { $e.E.SetFocus() } catch { }
-            $vp.SetValue($val)
+            if ($vp) { $vp.SetValue($val) } else { $rp.SetValue($num) }
           }
         }
         $msg = "$($ty.ToLower()) '$label' = '$([KitUi]::Val($e))'"
@@ -888,9 +906,10 @@ foreach ($step in $steps) {
       'closed' {
         $title = if ($arg) { $arg } else { $script:targetTitle }
         $h = $script:target
+        if (-not $arg -and $h -eq [IntPtr]::Zero) { Fail $n $step 'no target: give the title (closed <title>) or start with dialog/alert' }
         $gone = Until {
           if ($arg) { -not (Dialogs | Where-Object { Title-Matches $_.Title $arg }) }
-          else { $h -eq [IntPtr]::Zero -or -not [KitUi]::IsWindow($h) -or -not [KitUi]::IsWindowVisible($h) }
+          else { -not [KitUi]::IsWindow($h) -or -not [KitUi]::IsWindowVisible($h) }
         }
         if (-not $gone) { Fail $n $step "[$title] is still open" }
         $msg = "[$title] closed"
