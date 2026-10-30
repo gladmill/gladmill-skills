@@ -19,6 +19,10 @@
 #   esc                         press Esc in AutoCAD (foreground + SendKeys; gets out of a prompt). Exit 3: AutoCAD could not
 #                               be brought to the front and Esc was only posted; check with query or shot
 #   cancel "<window title>" [--close]   post IDCANCEL (or WM_CLOSE) to a window by exact title; prints visible windows
+#   ui [--step-timeout s] [--timeout s] [--file steps.txt] "<step>" ...   drive AutoCAD's UI step by step: ribbon clicks,
+#                               commands that open dialogs, DCL dialogs, message boxes (steps: scripts/README.md). Exit 0 all
+#                               passed, 1 a step failed (fetch out/ui-fail.png for the screen), 2 bad input or setup error,
+#                               3 replaced by a newer ui run, 4 timeout
 #   fetch <remote path rel. to home> [local]   copy a file back from the box
 set -uo pipefail
 HOST="${ACAD_DEV_SSH_HOST:-}"
@@ -41,10 +45,11 @@ H="$(winhome)" || { echo "cannot reach $HOST over ssh" >&2; exit 2; }
 HW="${H//\//\\}"
 # psa <script> [args]: run an installed script; its exit code is passed through. ssh alone reports 0/1 when the box's default
 # shell is PowerShell (it collapses the inner powershell's code), so the code travels as a last output line, which is removed.
+# awk runs with LC_ALL=C: the box's console output is not UTF-8 (an em dash in a window title stopped a UTF-8 awk).
 psa() {
   local s="$1"; shift
   rps "& '$HW\\scripts\\$s' $*; \$c = if (\$LASTEXITCODE) { \$LASTEXITCODE } elseif (-not \$?) { 1 } else { 0 }; \"__ACAD_DEV_RC=\$c\"; exit \$c" |
-    awk '/^__ACAD_DEV_RC=[0-9]+\r?$/ { gsub(/[^0-9]/, ""); rc = $0; seen = 1; next } { print; fflush() } END { exit seen ? rc : 99 }'
+    LC_ALL=C awk '/^__ACAD_DEV_RC=[0-9]+\r?$/ { gsub(/[^0-9]/, ""); rc = $0; seen = 1; next } { print; fflush() } END { exit seen ? rc : 99 }'
   local st=("${PIPESTATUS[@]}")
   if [ "${st[1]}" = 99 ]; then [ "${st[0]}" = 0 ] && return 1; return "${st[0]}"; fi   # no code line: ssh or powershell failed
   return "${st[1]}"
@@ -55,8 +60,9 @@ fresh() { rps "Remove-Item '$HW\\$1' -Force -ErrorAction SilentlyContinue"; }
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 case "$cmd" in
   install)
-    rps "New-Item -ItemType Directory -Force '$HW\\scripts\\queries','$HW\\out' | Out-Null; exit 0" >/dev/null
+    rps "New-Item -ItemType Directory -Force '$HW\\scripts\\queries','$HW\\out','$HW\\samples' | Out-Null; exit 0" >/dev/null
     scp -q "$here"/*.ps1 "$here"/*.vbs "$HOST:$H/scripts/" && scp -q "$here"/queries/*.ps1 "$HOST:$H/scripts/queries/" \
+      && scp -q "$here"/../samples/* "$HOST:$H/samples/" \
       && echo "installed to $HW\\scripts" || { echo "scp failed" >&2; exit 2; } ;;
   start)
     tmo=240; trust="${ACAD_DEV_TRUSTED:-}"; product="${ACAD_DEV_PRODUCT:-}"; profile="${ACAD_DEV_PROFILE:-}"; exe="${ACAD_DEV_EXE:-}"
@@ -116,6 +122,26 @@ case "$cmd" in
     if [ "${1:-}" = "--close" ]; then rps "Set-Content '$HW\\closeflag.txt' 1" >/dev/null; fi
     fresh out/result.txt; fresh out/done.txt; psa run-task.ps1 wincancel.ps1
     rps "if ((Test-Path '$HW\\out\\done.txt') -and (Test-Path '$HW\\out\\result.txt')) { Get-Content '$HW\\out\\result.txt' } else { exit 1 }" || { echo "cancel produced no fresh result (task failed or timed out)" >&2; exit 1; } ;;
+  ui)
+    st=20; tmo=; file=; steps=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --step-timeout|--timeout|--file)
+          [ $# -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
+          case "$1" in --step-timeout) st="$2" ;; --timeout) tmo="$2" ;; --file) file="$2" ;; esac; shift ;;
+        *) steps+=("$1") ;;
+      esac; shift
+    done
+    [[ "$st" =~ ^[0-9]+$ ]] && [[ "${tmo:-0}" =~ ^[0-9]+$ ]] || { echo "ui: --step-timeout and --timeout take whole seconds" >&2; exit 2; }
+    tmp="$(mktemp)"
+    if [ -n "$file" ]; then cp "$file" "$tmp" || { rm -f "$tmp"; exit 2; }
+    elif [ ${#steps[@]} -gt 0 ]; then printf '%s\n' "${steps[@]}" > "$tmp"
+    else rm -f "$tmp"; echo "ui: give steps, or --file steps.txt" >&2; exit 2; fi
+    scp -q "$tmp" "$HOST:$H/ui.txt" || { rm -f "$tmp"; echo "scp failed" >&2; exit 2; }; rm -f "$tmp"
+    extra=""; [ -n "$tmo" ] && extra="-TimeoutSec $tmo"
+    psa ui.ps1 -Staged -StepTimeoutSec "$st" $extra; rc=$?
+    [ "$rc" = 1 ] && echo "(screenshot of the failure: acad-dev.sh fetch out/ui-fail.png ./ui-fail.png)"
+    exit "$rc" ;;
   fetch) scp -q "$HOST:$H/${1:?remote path}" "${2:-.}" ;;
   *) sed -n '2,/^set -uo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
