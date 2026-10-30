@@ -260,9 +260,9 @@ public static class KitUi {
   public static List<KitCtl> Controls(IntPtr dlg) {
     var all = new List<KitCtl>();
     foreach (var h in Kids(dlg)) {
-      if (Cls(GetParent(h)).ToLowerInvariant().Contains("combobox")) continue;   // the edit inside an editable drop-down: the combo is the control
       var k = new KitCtl(); k.H = h; k.Cls = Cls(h); k.Style = Style(h); k.Id = CtrlId(h);
       k.Kind = KindOf(h, k.Cls, k.Style); k.Visible = IsWindowVisible(h); k.Enabled = IsWindowEnabled(h);
+      if (k.Kind == "edit" && Cls(GetParent(h)).ToLowerInvariant().Contains("combobox")) continue;   // the edit inside an editable drop-down: the combo is the control
       k.Text = (k.Kind == "edit" || k.Kind == "combo" || k.Kind == "list") ? "" : Text(h);
       all.Add(k);
     }
@@ -633,8 +633,8 @@ function Click-Elem($e, $what) {
     [KitUi]::Front($frame, $false) | Out-Null; Start-Sleep -Milliseconds 200; $root = [KitUi]::RootAt($x, $y)   # no Alt tap: a recorder would log it
   }
   if ($root -ne $frame -and [KitUi]::Pid($root) -ne $apid) { return "$what at $x,$y is covered by another program's window [$([KitUi]::Caption($root))] class=$([KitUi]::Cls($root))" }
-  # AutoCAD's own windows: only the frame or a ribbon popup (a slide-out: a WPF window owned by the frame) may take the click, not a floating palette
-  if ($root -ne $frame -and -not ([KitUi]::Cls($root) -like 'HwndWrapper*' -and [KitUi]::GetWindow($root, 4) -eq $frame)) {
+  # AutoCAD's own windows: only the frame or a ribbon popup (a slide-out: a WPF window the frame owns, directly or through another popup) may take the click, not a floating palette
+  if ($root -ne $frame -and -not ([KitUi]::Cls($root) -like 'HwndWrapper*' -and [KitUi]::GetAncestor($root, 3) -eq $frame)) {   # 3 = GA_ROOTOWNER: popups of popups too
     return "$what at $x,$y is covered by AutoCAD's window [$([KitUi]::Caption($root))] class=$([KitUi]::Cls($root)): move or close it"
   }
   [KitUi]::Click($x, $y)
@@ -698,7 +698,12 @@ function Quiescent {
     if (-not $script:acad) { $script:comErr = 'COM: AutoCAD.Application not reachable'; $script:acad = [Runtime.InteropServices.Marshal]::GetActiveObject('AutoCAD.Application') }
     $script:comErr = ''
     return [bool]$script:acad.GetAcadState().IsQuiescent
-  } catch { if ($script:comErr) { $script:comErr += " ($($_.Exception.Message))" }; $script:acad = $null; return $false }
+  } catch {
+    if ($script:comErr) { $script:comErr += " ($($_.Exception.Message))" }
+    # rejected as busy (RPC_E_CALL_REJECTED): AutoCAD is there, keep the reference; anything else: look it up again next time
+    if ($_.Exception.InnerException.HResult -ne -2147418111 -and $_.Exception.HResult -ne -2147418111) { $script:acad = $null }
+    return $false
+  }
 }
 # After a click or typed command: wait (up to $sec) until AutoCAD has taken it, i.e. is busy or shows a dialog, then a moment for the
 # prompt to settle. Text typed before that can be lost (a ribbon macro starts with ^C^C, which cancels what is pending).
@@ -768,7 +773,7 @@ foreach ($step in $steps) {
   $msg = $null
   try {
     switch ($verb) {
-      'command' {
+      'command' { $script:comErr = ''
         if (-not $arg) { Fail $n $step 'command needs the text to send' }
         if (-not [KitUi]::IsWindowEnabled($frame)) { Fail $n $step ('a modal dialog is open; a command typed now would wait behind it: ' + ((List-Dialogs) -join '; ')) }
         if (-not (Until { Quiescent } ([Math]::Min(5, $script:stepTimeout)))) { Fail $n $step $(if ($script:comErr) { "AutoCAD's state can't be read: $($script:comErr)" } else { 'AutoCAD is busy: a command or prompt is active (finish it, use type to answer it, or press Esc with esc.ps1)' }) }
@@ -784,7 +789,7 @@ foreach ($step in $steps) {
         Start-Sleep -Milliseconds 300
         $msg = 'typed'
       }
-      'idle' {
+      'idle' { $script:comErr = ''
         $sec = if ($arg -match '^\d+$') { [int]$arg } else { $script:stepTimeout }
         # free = no modal dialog (the main window is enabled) and AutoCAD quiescent twice in a row; modeless windows may stay open
         $q = Until { if ([KitUi]::IsWindowEnabled($frame) -and (Quiescent)) { Start-Sleep -Milliseconds 300; if (Quiescent) { $true } } } $sec
@@ -810,7 +815,7 @@ foreach ($step in $steps) {
       'expect' {
         $t = Need-Target $n $step
         # the title, texts and values; not the drop-downs' and lists' other items (`expect Doors` must not pass on an unselected item)
-        $seen = { @([KitUi]::Caption($t)) + (Texts $t) + @((Read-Target $t) -replace '  items: .*$', '') }
+        $seen = { @([KitUi]::Caption($t)) + (Texts $t) + @((Read-Target $t) -replace '  items: .*?( \(disabled\))?$', '$1') }
         $text = & $seen
         $ok = Until { $all = (& $seen) -join "`n"; if ($all -match $arg) { $true } } ([Math]::Min(3, $script:stepTimeout))
         if (-not $ok) { Fail $n $step ("no match for /$arg/ in: " + (($text | Select-Object -Unique) -join ' / ')) }
@@ -864,7 +869,7 @@ foreach ($step in $steps) {
               if (-not $ie) {
                 if ($ec) { try { $ec.Collapse() } catch { } }
                 $tv = [KitUi]::Pattern($e, [System.Windows.Automation.ValuePattern]::Pattern)
-                if ($ty -eq 'ComboBox' -and $items.Count -eq 1 -and $tv -and -not $tv.Current.IsReadOnly) { $tv.SetValue($it); $ec = $null; break }   # editable: type it
+                if ($ty -eq 'ComboBox' -and $items.Count -eq 1 -and $tv -and -not $tv.Current.IsReadOnly) { try { $e.E.SetFocus() } catch { }; $tv.SetValue($it); $ec = $null; break }   # editable: type it
                 Fail $n $step "no item '$it' in '$label'"
               }
               $si = [KitUi]::Pattern($ie, [System.Windows.Automation.SelectionItemPattern]::Pattern)
@@ -881,7 +886,8 @@ foreach ($step in $steps) {
             if ($rp -and -not [double]::TryParse($val, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$num)) { Fail $n $step "'$label' ($ty) takes a number, not '$val'" }
             if (-not $vp -and -not $rp) { Fail $n $step "'$label' ($ty) takes no typed value" }
             try { $e.E.SetFocus() } catch { }
-            if ($vp) { $vp.SetValue($val) } else { $rp.SetValue($num) }
+            try { if ($vp) { $vp.SetValue($val) } else { $rp.SetValue($num) } }
+            catch { Fail $n $step "'$label' ($ty) did not take '$val': $($_.Exception.Message.Split("`n")[0])" }
           }
         }
         $msg = "$($ty.ToLower()) '$label' = '$([KitUi]::Val($e))'"
