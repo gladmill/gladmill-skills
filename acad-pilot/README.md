@@ -8,6 +8,10 @@ What is in the box:
 - A Claude Code skill (`acad-pilot`) with the workflow, the traps to avoid, and COM query recipes.
 - PowerShell scripts (and an SSH wrapper) that do the driving: start, stop, ready, send commands, COM queries,
   screenshots, Esc, and window cancel.
+- A UI driver (`ui`) for what commands alone can't reach: it clicks ribbon buttons (including split buttons and panel
+  slide-outs), fills and answers dialogs (your LISP's DCL dialogs, AutoCAD's own dialogs, .NET WinForms and WPF dialogs) and
+  message boxes (`alert`), checks what they say, and reports each step as ok or FAIL. It finds dialogs whether or not they are
+  in front, even behind other windows or off screen. A sample LISP command with a DCL dialog (`samples/kit-dialog.lsp`) shows how.
 - Works with AutoCAD 2024, 2025 and 2026 (and verticals such as Electrical, with a setting).
 
 This is the free, open-source part. It is MIT licensed (see LICENSE).
@@ -49,6 +53,12 @@ Remote mode (Claude Code on a Mac/Linux/other Windows machine, AutoCAD on a Wind
 | `ACAD_DEV_COM_RETRY_SEC` | How long a COM call AutoCAD rejects as busy (`RPC_E_CALL_REJECTED`) is retried before it fails, in seconds. Default 30, at most 600; 0 turns retrying off. Read on the Windows machine (remote mode: set it there as a user environment variable). |
 | `ACAD_DEV_TRUSTED` | Folders to add to AutoCAD's trusted locations (`TRUSTEDPATHS`) at start, `;`-separated; end one with `\...` to include subfolders. Same as `acad-dev.sh start --trust "..."`. Plugins you load from there skip the "unsigned executable" dialog. You choose these folders: anything that can write to them gets code loaded into AutoCAD. |
 
+## Dialogs, alerts and the ribbon
+Ask Claude, for example: "Load my LISP, run MYCMD, fill its dialog with Name=Test and Quantity=3, press OK and tell me what the
+alert says." Claude writes the steps for the `ui` driver (`command`, `dialog`, `set`, `press`, `alert`, `expect`,
+`ribbon`, `idle`...) and reads back what each one did. The driver never answers AutoCAD's security prompts ("unsigned executable"):
+those stay with you. Loading a LISP file from a folder that is not in `TRUSTEDPATHS` shows such a prompt (`SECURELOAD`).
+
 ## Optional: trial start-up window
 `scripts/install-trial-watch.ps1` adds a logon task that closes AutoCAD's trial splash window for 5 minutes after
 AutoCAD starts. It never signs in. Remove it with `schtasks /delete /tn AcadDevTrialWatch /f`.
@@ -57,6 +67,9 @@ AutoCAD starts. It never signs in. Remove it with `schtasks /delete /tn AcadDevT
 - `RPC_E_CALL_REJECTED` or a command that never returns: AutoCAD is usually waiting at a prompt or a dialog. Ask Claude to take a
   screenshot, then send Esc or cancel the dialog (it knows how). AutoCAD Electrical also rejects calls while it is only busy
   (long scripts, closing drawings); `run`/`query` retry those for up to `ACAD_DEV_COM_RETRY_SEC` seconds (default 30). Details: `acad-pilot/references/gotchas.md`.
+- A command that opens a dialog or an alert: `run` waits for the command, which waits for the dialog, until it times out. Use `ui`
+  instead (`command MYCMD`, then `dialog ...` / `alert` steps); see `acad-pilot/scripts/README.md`.
+- `ui` says `FAIL ... no control 'X'`: add a `read` step to see the labels the dialog really has (the result also lists them).
 - AutoCAD quits when the drawings are closed, or `Documents.Add()` fails with "Method not available in SDI mode": AutoCAD is in
   single-drawing mode (`SDI` is non-zero). Use the kit's `q-newdoc`, `q-closeall` and `q-discardall` queries (they replace the
   drawing instead) and don't send `CLOSE`. Details: `references/gotchas.md`, "SDI mode".

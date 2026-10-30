@@ -14,7 +14,8 @@
   `start-acad.ps1` runs a hidden `cmd` whose `start` shows AutoCAD normally.
 - Run scripts with `powershell -NoProfile -ExecutionPolicy Bypass -File ...`: script execution may be disabled.
 - Over SSH, PowerShell exits 1 when its last command "failed", even with `-ErrorAction SilentlyContinue`: end with `exit 0` when you don't care.
-- Simulated mouse clicks (`SetCursorPos`/`mouse_event`) don't reach the session; posted window messages (`PostMessage`) do.
+- Real input (`SetCursorPos` + `mouse_event`, `keybd_event`, SendKeys) from the interactive one-shot task does reach the desktop
+  (tested on AutoCAD 2026 in a VM). Posted mouse messages reach Win32 and WinForms buttons but don't press WPF buttons.
 
 ## COM
 - COM calls hang or are rejected (`RPC_E_CALL_REJECTED`, 0x80010001) while AutoCAD waits at a prompt or shows a modal dialog,
@@ -58,6 +59,28 @@
 - After a `TIMEOUT` the worker may still be running in the session (the task is deleted, its process is not), and it can
   write into the next run's result. Wait out the retry window, or check with a screenshot, before the next `run`.
 - The ribbon, palettes and other UI appear a moment after the drawing opens; a COM query can run before they exist.
+
+## Ribbon, dialogs and alerts (`ui`)
+- The ribbon is visible to UI Automation from outside AutoCAD: tabs are buttons under the id `mMainTabs`; a button is an element
+  with the id `<command id>_RibbonItemControl` named by its label; a split button's command part is `<id>_FlyoutButtonExecute`; a
+  panel's title bar (`<panel id>_PanelTitleBar`) opens its slide-out, a separate popup under the main window.
+- UI Automation's Toggle on a ribbon button only flips how it looks; it does **not** run the command. `ui` clicks it with the real mouse.
+- Text typed right after a ribbon click can be lost: the button's macro starts with `^C^C`, which cancels what is pending. `ui`
+  waits until AutoCAD has started the command before the next step.
+- DCL dialogs have the window class `adesk_dlg*` (not `#32770`), with ordinary child controls: `Static` labels before `Edit`,
+  `ComboBox` (popup_list) and `ListBox`; toggles are check boxes, radio buttons plain `BS_RADIOBUTTON`s that DCL manages. An edit
+  box's `action_tile` runs only when the box reports losing the focus (`EN_KILLFOCUS`), which `ui`'s `set` sends.
+- A LISP `alert` is a `#32770` "AutoCAD Message" box. While a modal dialog is open AutoCAD's main window is disabled.
+- Starting a command with COM `SendCommand` from a process that then exits, while the command shows a DCL dialog, leaves that
+  dialog ignoring its buttons (they act only after real mouse input). `ui` starts commands with `WM_COPYDATA` to the main window
+  instead, which returns at once and leaves nothing waiting.
+- While the mouse rests on the ribbon (a tool tip open), AutoCAD silently drops text typed with `WM_COPYDATA`. `ui` parks the mouse on
+  the command line after a ribbon click and before typing: not over the drawing, where each jump of the cursor moves the rubber band of
+  a prompt waiting for a point or distance (Retrace's recorder logged those as answers).
+- Bringing a window to the front with an Alt tap puts AutoCAD into menu mode for a moment; Retrace's recorder logged that as a modal
+  window titled like AutoCAD's main window. `ui`'s `keys` and `click <label>` don't tap Alt (they click the title bar if they must).
+- Retrace's recorder sees how a dialog closed only from real input: close dialogs with `click OK` / `keys {ENTER}` when recording.
+- `SECURELOAD` asks about `.lsp` files too, not only dlls: load LISP from a `TRUSTEDPATHS` folder or a person answers.
 
 ## Misc
 - In commands sent with `run`, `\n` is Enter, so `C:\new\plan.dwg` breaks at `\n`. Write paths with forward slashes (`C:/new/plan.dwg`). A literal `|` cannot be sent: it separates commands.
