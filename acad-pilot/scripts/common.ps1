@@ -36,11 +36,39 @@ function Invoke-InSession {
   #  - interactive caller: runs it directly.
   #  - session 0 (SSH): one-shot scheduled task with /it, started, polled until it stops, deleted.
   # Task arguments must not contain spaces or quotes (schtasks /tr mangles them); pass data through files in <home>.
-  param([string]$Script = '', [string]$ScriptArgs = '', [string]$Command = '', [string]$TaskName = 'AcadDevTask', [int]$TimeoutSec = 120)
+  param([string]$Script = '', [string]$ScriptArgs = '', [string]$Command = '', [string]$TaskName = 'AcadDevTask', [int]$TimeoutSec = 120,
+        [scriptblock]$OnPoll = $null)
   # -Command: a raw command line instead of a powershell script (task mode only; no spaces/quotes in it)
+  # -OnPoll: called about every 0.5 s while it runs; returning $true stops waiting (task mode: the task keeps running; interactive: the worker is ended)
   if ((Test-Interactive) -and $Script) {
-    $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Script) + @($ScriptArgs -split ' ' | Where-Object { $_ })
-    & powershell @a
+    # A process of its own with its output in files, so the timeout (and -OnPoll) hold here too: a worker stuck in a COM call
+    # that waits for a dialog is ended after $TimeoutSec instead of hanging this script for ever. -OnPoll returning $true is the
+    # stall path: the worker is ended too (task mode leaves it running), $script:WorkerKilled says so, and the exit code is left alone.
+    $script:WorkerKilled = $false
+    $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$Script`"") + @($ScriptArgs -split ' ' | Where-Object { $_ })
+    $tag = [guid]::NewGuid().ToString('N'); $so = Join-Path $script:Out "iis-$tag.out"; $se = Join-Path $script:Out "iis-$tag.err"
+    $psExe = if ($env:ACAD_DEV_PS_EXE) { $env:ACAD_DEV_PS_EXE } else { 'powershell' }   # ACAD_DEV_PS_EXE: for tests only
+    $sp = @{ FilePath = $psExe; ArgumentList = $a; PassThru = $true; RedirectStandardOutput = $so; RedirectStandardError = $se }
+    if ($IsWindows -ne $false) { $sp.WindowStyle = 'Hidden' }   # ($IsWindows is $null in Windows PowerShell 5.1)
+    $p = Start-Process @sp
+    $null = $p.Handle   # keep the process handle open: without it ExitCode can read empty once the process has ended
+    $deadline = (Get-Date).AddSeconds($TimeoutSec); $timedOut = $false; $stoppedWaiting = $false
+    while (-not $p.HasExited) {
+      if ((Get-Date) -gt $deadline) { $timedOut = $true; break }
+      if ($OnPoll -and (& $OnPoll)) { $stoppedWaiting = $true; break }
+      Start-Sleep -Milliseconds 300
+    }
+    if ($timedOut -or $stoppedWaiting) {
+      $script:WorkerKilled = $true
+      if (Get-Command taskkill -EA SilentlyContinue) { & taskkill /PID $p.Id /T /F 2>&1 | Out-Null } else { Stop-Process -Id $p.Id -Force -EA SilentlyContinue }
+      [void]$p.WaitForExit(5000)   # its files are not read or removed while it still holds them
+    }
+    $enc = try { [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage) } catch { [Text.Encoding]::Default }
+    foreach ($f in $so, $se) {
+      if (Test-Path $f) { $t = try { $fs = New-Object IO.FileStream($f, 'Open', 'Read', 'ReadWrite'); try { (New-Object IO.StreamReader($fs, $enc)).ReadToEnd() } finally { $fs.Dispose() } } catch { '' }; if ($t) { $t -split "`r?`n" | Where-Object { $_ -ne '' } }; Remove-Item $f -Force -EA SilentlyContinue }
+    }
+    if ($timedOut) { 'TIMEOUT waiting for the task' }
+    if (-not $script:WorkerKilled) { $global:LASTEXITCODE = $p.ExitCode }   # the child's own code, exactly
     return
   }
   if ("$Script$($script:Home_)" -match '\s') { throw "Remote mode: the scripts folder and ACAD_DEV_HOME must not contain spaces ($Script, $($script:Home_))" }
@@ -59,11 +87,76 @@ function Invoke-InSession {
       $i = Get-ScheduledTaskInfo -TaskName $TaskName -EA SilentlyContinue
       if ($t -and $i -and $t.State -ne 'Running' -and $i.LastTaskResult -ne 267011 -and $i.LastRunTime.Year -gt 2000) { break }
       if ((Get-Date) -gt $deadline) { 'TIMEOUT waiting for the task'; break }
+      if ($OnPoll -and (& $OnPoll)) { break }
       Start-Sleep -Milliseconds 500
     }
   } finally {
     schtasks /delete /tn $TaskName /f 2>$null | Out-Null
     $global:LASTEXITCODE = 0   # schtasks' code is not the caller's result: a script that ends here must not exit with it
+  }
+}
+
+function Get-AcadState {
+  # One readiness probe (acad-ready.ps1) in the interactive session: 'ready', 'busy' (answers COM, not quiescent: a command,
+  # prompt or dialog is active), 'none: <reason>', or 'none: no answer' when the probe got no reply within TimeoutSec (AutoCAD
+  # computing; that probe process may still answer later, into its own file). -Tag: a file per probe, see acad-ready.ps1.
+  param([int]$TimeoutSec = 30, [string]$Tag = '')
+  $f = Join-Path $script:Out $(if ($Tag) { "ready-$Tag.txt" } else { 'ready.txt' })
+  Remove-Item $f -EA SilentlyContinue
+  $a = if ($Tag) { "-Tag $Tag" } else { '' }
+  Invoke-InSession -Script (Join-Path $PSScriptRoot 'acad-ready.ps1') -ScriptArgs $a -TaskName 'AcadDevReady' -TimeoutSec $TimeoutSec | Out-Null
+  if (Test-Path $f) { (Get-Content $f -Raw).Trim() } else { 'none: no answer' }
+}
+
+. (Join-Path $PSScriptRoot 'blocker-policy.ps1')   # Test-ComRejected and the allowlist / denylist functions
+
+function Test-BlockerAutoAction {
+  # The guard applies allowlisted actions on its own (stalls, timeouts, rejected COM calls) unless ACAD_DEV_BLOCKER_ACTIONS=0.
+  return ("$env:ACAD_DEV_BLOCKER_ACTIONS".Trim() -ne '0')
+}
+
+function Get-BlockerReport {
+  # Looks at what is blocking AutoCAD (blocker-worker.ps1 in the interactive session) and returns Blocked (bool), Windows, Applied
+  # (allowlisted actions that worked) and Text (the report, "BLOCKED BY: ..." first when something blocks). -Apply: also do what
+  # the allowlist says (never for denylisted windows). Never throws; bounded by -TimeoutSec.
+  param([switch]$Apply, [switch]$NoShot, [int]$TimeoutSec = 60)
+  # each call has its own result file and scheduled-task name, so two guards at once never read or delete each other's
+  $tag = [guid]::NewGuid().ToString('N').Substring(0, 12); $why = ''
+  $f = Join-Path $script:Out "blockers-$tag.txt"
+  $al = @(); if ($Apply) { $al += '-Apply' }; if ($NoShot) { $al += '-NoShot' }; $al += "-Tag $tag"   # (not @($(if ...)): Windows PowerShell 5.1 drops the elements of such a list)
+  $a = $al -join ' '
+  try { Invoke-InSession -Script (Join-Path $PSScriptRoot 'blocker-worker.ps1') -ScriptArgs $a -TaskName "AcadDevBlockers$tag" -TimeoutSec $TimeoutSec | Out-Null } catch { $why = $_.Exception.Message.Split("`n")[0] }
+  $text = if (Test-Path $f) { "$(Get-Content $f -Raw -Encoding UTF8)".Trim() } else { '' }
+  Remove-Item $f -Force -EA SilentlyContinue
+  if ($text -match '(?m)^BLOCKERS blocked=(\d) windows=(\d+) applied=(\d+)') {
+    $body = ($text -split "`r?`n" | Select-Object -Skip 1) -join "`n"
+    return [pscustomobject]@{ Blocked = ($Matches[1] -eq '1'); Windows = [int]$Matches[2]; Applied = [int]$Matches[3]; Text = $body }
+  }
+  [pscustomobject]@{ Blocked = $false; Windows = 0; Applied = 0; Text = "blocker check gave no result (the check itself timed out or failed$(if ($why) { ': ' + $why })); run blockers.ps1 or take a screenshot" }
+}
+
+function Invoke-Guarded {
+  # Runs a COM operation; if AutoCAD still rejects it (after the retry window), looks for the blocking window: allowlisted
+  # windows are dealt with and the operation is tried once more; otherwise throws the "BLOCKED BY: ..." report.
+  # Only for operations that are safe to repeat after a rejection (a rejected call did not run).
+  # -Current: returns $false once the run was stopped or replaced; then nothing is applied and nothing is resent.
+  param([scriptblock]$Op, [string]$What = 'a COM call', [scriptblock]$Current = $null)
+  try { return (& $Op) } catch {
+    if (-not (Test-ComRejected $_)) { throw }
+    $first = $_
+    if ($Current -and -not (& $Current)) { throw "$What was rejected and this run is no longer current: not retried" }
+    $g = Get-BlockerReport -Apply:(Test-BlockerAutoAction)
+    if ($g.Applied -gt 0) {
+      Start-Sleep -Seconds 1
+      if ($Current -and -not (& $Current)) { throw "${What}: this run is no longer current after the guard dealt with a window: not resent" }
+      try { return (& $Op) } catch {
+        if (-not (Test-ComRejected $_)) { throw }
+        $g = Get-BlockerReport
+        throw "$What was still rejected after the allowlist dealt with a window.`n$($g.Text)"
+      }
+    }
+    if ($g.Blocked) { throw "$What was rejected by AutoCAD.`n$($g.Text)" }
+    throw $first
   }
 }
 

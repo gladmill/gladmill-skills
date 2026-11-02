@@ -7,7 +7,7 @@ Claude and AutoCAD.
 What is in the box:
 - A Claude Code skill (`acad-pilot`) with the workflow, the traps to avoid, and COM query recipes.
 - PowerShell scripts (and an SSH wrapper) that do the driving: start, stop, ready, send commands, COM queries,
-  screenshots, Esc, and window cancel.
+  screenshots, Esc, window cancel, and a blocker guard that tells you what is in AutoCAD's way.
 - A UI driver (`ui`) for what commands alone can't reach: it clicks ribbon buttons (including split buttons and panel
   slide-outs), fills and answers dialogs (your LISP's DCL dialogs, AutoCAD's own dialogs, .NET WinForms and WPF dialogs) and
   message boxes (`alert`), checks what they say, and reports each step as ok or FAIL. It finds dialogs whether or not they are
@@ -51,6 +51,7 @@ Remote mode (Claude Code on a Mac/Linux/other Windows machine, AutoCAD on a Wind
 | `ACAD_DEV_PRODUCT` | `/product` switch (e.g. `ACAD`) if a vertical product starts instead of plain AutoCAD, or `ACADE` to start AutoCAD Electrical. Same as `start-acad.ps1 -Product` / `acad-dev.sh start --product`. |
 | `ACAD_DEV_PROFILE` | `/p` switch: the AutoCAD profile to start with. AutoCAD Electrical needs `<<ACADE>>` with `ACAD_DEV_PRODUCT=ACADE`. Same as `start-acad.ps1 -Profile` / `acad-dev.sh start --profile`. |
 | `ACAD_DEV_COM_RETRY_SEC` | How long a COM call AutoCAD rejects as busy (`RPC_E_CALL_REJECTED`) is retried before it fails, in seconds. Default 30, at most 600; 0 turns retrying off. Read on the Windows machine (remote mode: set it there as a user environment variable). |
+| `ACAD_DEV_BLOCKERS_FILE` / `ACAD_DEV_BLOCKER_ACTIONS` | The blocker guard's allowlist file (default `blockers.txt` in the work folder) and `0` to stop it dismissing windows on its own. Read on the Windows machine. |
 | `ACAD_DEV_TRUSTED` | Folders to add to AutoCAD's trusted locations (`TRUSTEDPATHS`) at start, `;`-separated; end one with `\...` to include subfolders. Same as `acad-dev.sh start --trust "..."`. Plugins you load from there skip the "unsigned executable" dialog. You choose these folders: anything that can write to them gets code loaded into AutoCAD. |
 
 ## Dialogs, alerts and the ribbon
@@ -58,6 +59,20 @@ Ask Claude, for example: "Load my LISP, run MYCMD, fill its dialog with Name=Tes
 alert says." Claude writes the steps for the `ui` driver (`command`, `dialog`, `set`, `press`, `alert`, `expect`,
 `ribbon`, `idle`...) and reads back what each one did. The driver never answers AutoCAD's security prompts ("unsigned executable"):
 those stay with you. Loading a LISP file from a folder that is not in `TRUSTEDPATHS` shows such a prompt (`SECURELOAD`).
+
+## When something blocks AutoCAD (blocker guard)
+Anything that stalls (a command that never returns, a `wait` or `ui` timeout) ends with a report instead of a bare timeout:
+`BLOCKED BY: ...` names the window in AutoCAD's way (title, class, its texts and buttons, whether it is modal), the command line
+state and a screenshot, and the script exits 6. A `run` also notices a command that has been waiting at a prompt or dialog for
+30 seconds (`STUCK`, exit 4). Ask Claude to run `acad-dev.sh blockers` (or `blockers.ps1`) first whenever AutoCAD seems stuck.
+- AutoCAD's "Drawing Recovery" window (shown after AutoCAD restarts from a crash) is closed automatically; closing it saves
+  nothing and deletes nothing.
+- To let the kit dismiss other windows you know are harmless (say, an add-in's results window), copy `samples/blockers.sample.txt`
+  to `blockers.txt` in the work folder and edit it. `ACAD_DEV_BLOCKER_ACTIONS=0` (set on the Windows machine) turns every automatic
+  dismissal off; the guard then only reports.
+- Security prompts, licence / sign-in / trial screens and "save changes?" prompts are never answered by the kit, whatever the
+  file says. A Windows Update "restart to install" prompt is only reported.
+- Every wait now has a limit, and ssh/scp give up on a dead connection. Details: `scripts/README.md`.
 
 ## Optional: trial start-up window
 `scripts/install-trial-watch.ps1` adds a logon task that closes AutoCAD's trial splash window for 5 minutes after

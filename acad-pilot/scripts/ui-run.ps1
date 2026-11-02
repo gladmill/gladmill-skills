@@ -442,6 +442,8 @@ function Fail($n, $step, $why) {
   W ("FAIL {0} {1}: {2}" -f $n, $step, $why)
   try { W '--- dialogs now ---'; foreach ($l in (List-Dialogs)) { W "  $l" } } catch { W "  (could not list them: $($_.Exception.Message))" }
   try { Save-Screenshot (Join-Path $out 'ui-fail.png'); W 'screenshot: out\ui-fail.png' } catch { }
+  # what is in AutoCAD's way (report only: ui never closes a window on its own account)
+  try { $g = Get-BlockerReport -NoShot -TimeoutSec 40; if ($g.Blocked) { foreach ($l in ($g.Text -split "`r?`n")) { W $l } } } catch { }
   W ("FAIL at step {0} of {1}" -f $n, $script:total)
   Finish 1
 }

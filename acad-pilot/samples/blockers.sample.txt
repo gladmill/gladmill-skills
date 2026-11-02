@@ -1,0 +1,27 @@
+# Sample allowlist for the blocker guard. Copy it to blockers.txt in the work folder (ACAD_DEV_HOME, default
+# %USERPROFILE%\acad-dev) and edit. Without a blockers.txt every window is only reported, never touched, except AutoCAD's
+# "Drawing Recovery" window, which a built-in rule closes (add `^Drawing Recovery :: any :: report` to keep it open).
+#
+# One rule per line, three fields separated by " :: " (space, two colons, space):
+#     <title regex> :: <kind> :: <action>
+#   title regex  .NET regex, case-insensitive, matched anywhere in the window title (^ and $ anchor it)
+#   kind         any | dialog | messagebox | winforms | wpf | class=<regex on the window class, case as written>
+#                (only dialog-like windows of acad.exe are looked at: Win32/MFC/DCL dialogs, message boxes, titled WinForms/WPF windows)
+#   action       close            close the window (WM_CLOSE, then Cancel for a classic dialog)
+#                press <button>   press the button with that label ("&" ignored, case-insensitive); if the window has no such
+#                                 button the rule does not apply and later rules are tried
+#                report           say what it is, change nothing (the default for every window no rule names)
+# The first matching rule wins. Lines starting with # and blank lines are ignored.
+#
+# NEVER touched, whatever this file says (built in, wins over every rule): AutoCAD security prompts (unsigned / untrusted files,
+# "Load once / Always load"), licence / sign-in / subscription / trial / activation screens, Autodesk licensing helper windows,
+# "save changes?" prompts, other programs' windows, and the buttons Save, Yes, No, Discard, Trust, Load, Accept, Sign in.
+#
+# Example: a hypothetical add-in shows a "Review Results" window after every run that nobody needs to read in an automated test.
+Review Results$ :: wpf :: close
+
+# Example: an add-in's informational message box ("Export finished") with an OK button.
+^Export finished$ :: messagebox :: press OK
+
+# Example: report-only rule (same as having no rule; handy to document a window you know about).
+^Update available :: any :: report

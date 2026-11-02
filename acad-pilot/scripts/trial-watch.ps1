@@ -5,11 +5,10 @@
 # the log if a start-up window is missed. The licensing agent's untitled window of class "webview" is closed by process and class.
 # It never closes AutoCAD's main window or a drawing window (it skips AutoCAD's frame by window class and '... AutoCAD ... - [' titles,
 # so verticals such as 'AutoCAD Electrical 2026 - [x]' are spared too).
-# In the same window it also closes AutoCAD's Drawing Recovery windows (clear-blockers.ps1: acad.exe windows only), which
-# appear when AutoCAD restarts after a crash. It never signs in, never enters a licence and does nothing once the window time is over.
+# It never signs in, never enters a licence and does nothing once the window time is over. (Drawing Recovery windows are not its
+# business: the blocker guard closes them, see blockers.ps1.)
 param([string]$Match = '(?i)\btrial\b|days? (left|remaining)|subscribe|buy now|free trial', [int]$WindowMinutes = 5, [string]$LicClass = 'webview')
 . (Join-Path $PSScriptRoot 'common.ps1')
-. (Join-Path $PSScriptRoot 'clear-blockers.ps1')
 Add-Type @"
 using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
 public static class TW {
@@ -29,7 +28,6 @@ $seen = @{}; $closed = @{}
 while ($true) {
   $acad = Get-Process acad -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1
   if ($acad -and ((Get-Date) - $acad.StartTime).TotalMinutes -lt $WindowMinutes) {
-    $b = Clear-Blockers; foreach ($t in @($b.closed)) { Add-Content $log ("{0:s} cleared blocker [{1}]" -f (Get-Date), $t) }
     $mainH = [string][long]$acad.MainWindowHandle
     $names = @{}; Get-Process | ForEach-Object { $names[[string]$_.Id] = $_.Name }
     foreach ($w in [TW]::All()) {

@@ -17,6 +17,29 @@
 - Real input (`SetCursorPos` + `mouse_event`, `keybd_event`, SendKeys) from the interactive one-shot task does reach the desktop
   (tested on AutoCAD 2026 in a VM). Posted mouse messages reach Win32 and WinForms buttons but don't press WPF buttons.
 
+## What blocks AutoCAD (blocker guard)
+- Run `blockers.ps1` | `acad-dev.sh blockers` first when anything stalls: it lists AutoCAD's dialogs and message boxes, Autodesk
+  licensing helper windows and other windows in front, whether the main frame is disabled (a modal window), and the command line
+  state (`CMDACTIVE` bits: 1 command, 2 transparent, 4 script, 8 dialog, 32 AutoLISP; `CMDNAMES`). Exit 6 = something blocks.
+- Typical blockers: an add-in's own message box (a .NET `MessageBox.Show()` without an owner can block AutoCAD's UI thread without
+  disabling the main frame, so the report lists it as `open (not blocking)`: if COM is rejected anyway, look at it first), a WPF/WinForms results window, "Component Updates Required", a
+  licence / sign-in / trial screen, an unsigned-file security prompt, a "save changes?" prompt, a DCL dialog left open.
+- A command waiting at the command line (no window) shows as `CMDACTIVE` 1 with `NO BLOCKERS`: that is a prompt, use `esc`.
+- COM answers "no answer within 8 s" in the report when AutoCAD is computing or a call waits at a prompt/dialog; that is not an error of the report.
+- AutoCAD's Drawing Recovery window (shown when AutoCAD restarts after a crash with unsaved drawings; a run can't use the drawing until
+  it is closed) is closed by the guard on its own (built-in rule, WM_CLOSE, which a dialog treats as Cancel; `acad-cmd.ps1` also runs
+  the guard while attaching). Closing it should leave the recovered files where AutoCAD keeps them (untested here); reopen them by
+  hand (`DRAWINGRECOVERY`) if you need them. A `blockers.txt` line `^Drawing Recovery :: any :: report` keeps it open.
+- A Windows Update "restart to install" prompt belongs to another process and can't be dismissed from the automation session. The
+  report notes it (never touches it); dismiss it by hand, or on a VM you own run `harden-automation-vm.ps1` once (opt-in: turns off
+  automatic installs and restarts and pauses updates).
+- The guard never answers security prompts, licence / sign-in / trial screens or "save changes?" prompts (built-in denylist, wins
+  over `blockers.txt`). It does not touch other programs' windows either. Only windows the user wrote into `blockers.txt` (and Drawing Recovery) are
+  dismissed, and never by pressing Save, Yes, No, Discard, Trust, Load, Accept or Sign in.
+- Windows in a different session or on another desktop (a locked screen, a secure desktop prompt such as UAC) cannot be seen or
+  closed from here: the report then shows no window, the screenshot shows a black or locked screen.
+- An invisible window (hidden, or on a virtual desktop that is cloaked) is not listed.
+
 ## COM
 - COM calls hang or are rejected (`RPC_E_CALL_REJECTED`, 0x80010001) while AutoCAD waits at a prompt or shows a modal dialog,
   or while it is still starting. At a prompt a call usually just waits (hangs until the prompt is answered); in `run`/`query`
@@ -35,14 +58,6 @@
 - A trial/new install shows a start-up window (and a sign-in) that blocks COM. A person signs in once. `trial-watch.ps1` can close
   the trial splash (find what to match in `out\startup-windows.log`); it cannot and must not sign in.
 - "Component Updates Required" and similar modal dialogs: screenshot, then `wincancel`.
-- **AutoCAD's Drawing Recovery windows** appear when AutoCAD restarts after a crash with unsaved drawings, and a run can't use the
-  drawing until they're closed. `clear-blockers.ps1` closes them (acad.exe windows titled "Drawing Recovery...", WM_CLOSE, which
-  a dialog normally treats as Cancel), `acad-cmd.ps1` runs it before attaching and retries a failed attach, and `trial-watch.ps1`
-  runs it in its start-up window. Closing the window should leave the recovered files where AutoCAD keeps them (untested here);
-  reopen them by hand (DRAWINGRECOVERY) if you need them.
-- **Windows Update** can restart an unattended box or show a "restart to install" prompt, which belongs to another process and can't
-  be dismissed from the automation session. `clear-blockers.ps1` reports one when it sees it; dismiss it by hand, or on a VM you own
-  run `harden-automation-vm.ps1` once (opt-in: turns off automatic installs and restarts and pauses updates).
 - A vertical product (Electrical, Mechanical...) is what `acad.exe` starts on such installs; `/product ACAD` may not change that.
   Use `ACAD_DEV_PRODUCT` and check `$acad.Name`/`$acad.Version` in a query.
 - To start AutoCAD Electrical, pass `/product ACADE` **and** its profile `/p "<<ACADE>>"` (`start --product ACADE --profile
@@ -90,9 +105,10 @@
 - Do not run two scripts that use the same task name at once (`AcadDevCmd`, `AcadDevReady`, ...): run them one after the other.
 
 - Posted Esc key messages (`PostMessage WM_KEYDOWN`) are ignored while AutoCAD waits at a command prompt. `esc.ps1` brings AutoCAD to the foreground and sends real keystrokes (SendKeys), which works. A hidden scheduled task (remote mode) may not take the foreground (Windows' foreground lock), so it taps Alt first, which lifts the lock. If AutoCAD still cannot be brought to the front it posts Esc to AutoCAD's focused control and says `foreground: False` (`acad-dev.sh esc` exits 3): check with a query or a screenshot before going on.
+- A floating palette (External References, Properties...) can hold the keyboard focus. Keys sent while it is in front stay in the palette, so the command line keeps waiting. `esc.ps1` therefore counts only the frame, or a dialog (`#32770`) the frame owns, as "AutoCAD in front". When a palette is in front, it brings the frame forward first. (Seen 2026-10-17: Esc reported success, but OPEN still waited until the palette was closed.)
 - Even in the interactive session, `Process.MainWindowHandle` of acad.exe can be an untitled WPF helper window, not AutoCAD's frame;
-  keystrokes sent there are lost. Find the frame by enumerating the process's visible, unowned top-level windows and taking the one
-  titled `Autodesk AutoCAD ...` (as `esc.ps1` does).
+  keystrokes sent there are lost. Find the frame among the process's visible, unowned top-level windows by its MFC frame class
+  (`AfxMDIFrame140u` on AutoCAD 2026; titles vary: `Autodesk AutoCAD 2026 - [x.dwg]`, `AutoCAD Electrical 2026 - UNREGISTERED VERSION - [x.dwg]`), as `esc.ps1` does.
 - **One driver at a time.** All calls share the work folder (`cmds.txt`, `query.ps1`, `out\`) and the scheduled-task names. Two sessions or agents driving the same AutoCAD at once overwrite each other's files and tasks, and calls time out. Run one at a time.
 - Do not type AutoLISP to read a variable (`(getvar "FILEDIA")` left on the command line without Enter blocks the next command); use a COM query: `$doc.GetVariable('FILEDIA')`.
 
