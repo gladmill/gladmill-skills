@@ -1,5 +1,5 @@
-# Blocker policy: pure functions (no Win32, no COM), dot-sourced by blocker-worker.ps1 and by tests/blocker-policy.tests.ps1.
-#   . (Join-Path $PSScriptRoot 'blocker-policy.ps1')
+# Blocker policy: pure functions (no Win32, no COM), loaded by common.ps1 for every script. Unit tests for this file are kept with
+# the kit's development sources.
 # A "window" here is any object with: Title, Class, Kind (dialog | messagebox | winforms | wpf | window | licensing | foreign),
 # Texts (string[]), Buttons (string[]). The allowlist file is blockers.txt in the work folder (format: scripts/README.md).
 #
@@ -29,9 +29,22 @@ $script:BlockerReportOnlyKinds = @('licensing', 'foreign')
 # Buttons the guard never presses, even in an allowlisted window (what they answer is a person's decision).
 $script:BlockerDenyButton = '(?i)^\s*(save|yes|no|don''?t save|do not save|discard|trust|load|load once|always load|accept|agree|i agree|sign in|log in|activate|buy|subscribe|ok to all)\b'
 
+# Window titles the guard tells apart, in one place (blocker-worker.ps1, common.ps1 and trial-watch.ps1 ask through the functions below).
+$script:RecoveryTitlePattern = '^\s*Drawing Recovery'
+$script:DrawingWindowPattern = '^(Autodesk )?AutoCAD.* - \['   # an AutoCAD drawing window, e.g. "Autodesk AutoCAD 2026 - [Drawing1.dwg]"
+
 $script:BlockerBuiltinRules = @(
-  [pscustomobject]@{ Line = 0; Title = '^\s*Drawing Recovery'; Kind = 'any'; Class = $null; Action = 'close'; Button = $null; Name = 'built-in: Drawing Recovery window' }
+  [pscustomobject]@{ Line = 0; Title = $script:RecoveryTitlePattern; Kind = 'any'; Class = $null; Action = 'close'; Button = $null; Name = 'built-in: Drawing Recovery window' }
 )
+
+function Test-RecoveryWindow([string]$Title) {
+  # AutoCAD's "Drawing Recovery" window, by its title (case-insensitive, leading blanks allowed).
+  return ("$Title" -match $script:RecoveryTitlePattern)
+}
+function Test-DrawingWindow([string]$Title) {
+  # An AutoCAD drawing window (its title ends "... - [file.dwg]"; also a vertical's "AutoCAD Electrical 2026 - [x]"): never a blocker.
+  return ("$Title" -match $script:DrawingWindowPattern)
+}
 
 function Test-BlockerDenied {
   # Returns the reason (string) when the window is on the built-in denylist, else $null.
@@ -40,7 +53,7 @@ function Test-BlockerDenied {
   $title = "$($W.Title)"
   # AutoCAD's Drawing Recovery window lists unsaved drawings, so its text mentions saving: that is not a save prompt (closing it
   # saves nothing). The security and licence checks still apply to it.
-  $recovery = $title -match '^\s*Drawing Recovery'
+  $recovery = Test-RecoveryWindow $title
   $all = (@($W.Title) + @($W.Texts) + @($W.Buttons) | Where-Object { $_ } | ForEach-Object { "$_" }) -join "`n"
   foreach ($d in $script:BlockerDeny) {
     if ($recovery -and $d.Name -eq 'save-changes prompt') { continue }
@@ -157,12 +170,24 @@ function Resolve-BlockerAction {
 
 function Get-WindowKind {
   # Kind from the window class. messagebox = a #32770 dialog without input controls (edit / combo / list).
+  # winforms = a top-level WinForms form (class WindowsForms10.Window.*) on purpose: other top-level WindowsForms10.* classes
+  # (tooltips, drop-down lists) are not windows anyone has to deal with, so they stay 'window'.
   param([string]$Class, [bool]$HasInput = $false)
   if ($Class -eq '#32770') { if ($HasInput) { return 'dialog' } else { return 'messagebox' } }
   if ($Class -like 'adesk_dlg*') { return 'dialog' }
-  if ($Class -like 'WindowsForms10.*') { return 'winforms' }
+  if ($Class -like 'WindowsForms10.Window*') { return 'winforms' }
   if ($Class -like 'HwndWrapper*') { return 'wpf' }
   'window'
+}
+
+function Test-DialogWindow {
+  # Is this top-level window a dialog-like candidate for the guard and the ui driver? Win32 / MFC / task dialogs (#32770) and DCL
+  # dialogs (adesk_dlg*) always; WinForms and WPF windows only when they have a title (an untitled one is a helper window).
+  # Never the frame, palettes (Afx:...), menus, tool tips or drop-down lists: their kind is 'window'.
+  param([string]$Class, [string]$Title = '')
+  $k = Get-WindowKind $Class
+  if ($k -in 'dialog', 'messagebox') { return $true }
+  return (($k -in 'winforms', 'wpf') -and "$Title".Length -gt 0)
 }
 
 function Test-ComRejected {
