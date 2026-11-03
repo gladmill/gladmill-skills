@@ -18,10 +18,10 @@ while ($true) {
   if ($acad -and ((Get-Date) - $acad.StartTime).TotalMinutes -lt $WindowMinutes) {
     $mainH = [IntPtr]$acad.MainWindowHandle
     $names = @{}; Get-Process | ForEach-Object { $names[[string]$_.Id] = $_.Name }
-    foreach ($w in @([AcadDevWin]::Tops() | Where-Object { $_.Visible })) {
+    foreach ($w in @([AcadDevWin]::VisibleTops($null))) {
       $name = $names[[string]$w.Pid]; if ($name -notmatch $procs) { continue }
       # never touch AutoCAD's own frame (MFC frame class; MainWindowHandle can be a WPF helper) or a drawing window
-      if ($w.H -eq $mainH -or ($name -eq 'acad' -and $w.Cls -like 'AfxMDIFrame*') -or $w.Title -match '^(Autodesk )?AutoCAD.* - \[') { continue }
+      if ($w.H -eq $mainH -or ($name -eq 'acad' -and $w.Cls -like 'AfxMDIFrame*') -or (Test-DrawingWindow $w.Title)) { continue }
       $key0 = [string]$w.H; $key = "$($w.H)|$($w.Title)"
       if (-not $seen[$key]) { $seen[$key] = 1; Add-Content $log ("{0:s} {1} class={2} title=[{3}]" -f (Get-Date), $name, $w.Cls, $w.Title) }
       $trial = ($w.Title -match $Match -and $w.Title -notmatch 'UNREGISTERED VERSION') -or ($name -eq 'AdskLicensingAgent' -and $w.Cls -eq $LicClass -and $w.Title -eq '')

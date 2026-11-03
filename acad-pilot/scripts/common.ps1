@@ -113,9 +113,14 @@ function Initialize-AcadWin {
   # Loads the kit's one Win32 window helper, [AcadDevWin] (EnumWindows, window classes / titles / texts, AutoCAD's main frame, WM_CLOSE /
   # IDCANCEL / BM_CLICK). Every script that looks at windows uses this one, not a copy of its own. Compiled once per process, on first use.
   # Window KIND (dialog, messagebox, winforms, wpf) is decided by Get-WindowKind in blocker-policy.ps1, not here.
-  if ('AcadDevWin' -as [type]) { return }
-  Add-Type -TypeDefinition @'
+  # A script with a C# helper of its own that needs [AcadDevWin] (ui-run.ps1) passes it as -ExtraSource (with its `using` lines in
+  # -ExtraUsings and its assemblies in -References): one compilation, so that code can call AcadDevWin directly. Throws if it does not compile.
+  param([string]$ExtraSource = '', [string]$ExtraUsings = '', [string[]]$References = @(), [string]$ExtraType = 'KitUi')
+  if ($ExtraSource) { if ($ExtraType -as [type]) { return } } elseif ('AcadDevWin' -as [type]) { return }
+  if ($ExtraSource -and ('AcadDevWin' -as [type])) { throw "AcadDevWin is already loaded without ${ExtraType}: call Initialize-AcadWin with the extra source first" }
+  $src = @'
 using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
+'@ + "`n$ExtraUsings`n" + @'
 public class AcadDevWindow { public IntPtr H; public uint Pid; public IntPtr Owner; public string Cls = ""; public string Title = ""; public bool Visible, Enabled, Topmost, Cloaked; public int L, T, R, B, Z; }
 public class AcadDevKid { public IntPtr H; public string Cls = ""; public string Text = ""; public int Style; public bool Visible; }
 public static class AcadDevWin {
@@ -128,7 +133,7 @@ public static class AcadDevWin {
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr h);
   [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
-  [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint c);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint c);
   [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
   [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
@@ -136,6 +141,7 @@ public static class AcadDevWin {
   [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW")] static extern IntPtr SMT0(IntPtr h, uint m, IntPtr w, IntPtr l, uint f, uint t, out IntPtr r);
   [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int a, out int v, int n);
   [StructLayout(LayoutKind.Sequential)] struct RECT { public int L, T, R, B; }
+  static readonly System.Text.RegularExpressions.Regex FrameTitle = new System.Text.RegularExpressions.Regex(@"^(Autodesk )?AutoCAD\b.*\b20\d\d\b");
   public static bool IsVisible(IntPtr h) { return IsWindowVisible(h); }
   public static bool IsEnabled(IntPtr h) { return IsWindowEnabled(h); }
   public static bool Exists(IntPtr h) { return IsWindow(h); }
@@ -147,7 +153,7 @@ public static class AcadDevWin {
     if (n == IntPtr.Zero || r.ToInt32() <= 0) return "";
     var b = new StringBuilder(r.ToInt32() + 2); IntPtr r2; SMT(h, 0x000D, new IntPtr(r.ToInt32() + 1), b, 2, 1500, out r2); return b.ToString();
   }
-  // all top-level windows (visible or not), front to back (EnumWindows order is the z-order)
+  // all top-level windows (visible or not), front to back (EnumWindows order is the z-order), with everything the guard reads
   public static List<AcadDevWindow> Tops() {
     var l = new List<AcadDevWindow>(); int z = 0;
     EnumWindows(delegate (IntPtr h, IntPtr x) {
@@ -157,10 +163,27 @@ public static class AcadDevWin {
       RECT r; GetWindowRect(h, out r); w.L = r.L; w.T = r.T; w.R = r.R; w.B = r.B; w.Z = z++; l.Add(w); return true; }, IntPtr.Zero);
     return l;
   }
-  // handles of one process's top-level windows (visible or not), front to back; cheaper than Tops()
+  // The cheap enumerator for polling loops: visible top-level windows only, filtered by process in here (pids null = every process),
+  // front to back, with H, Pid, Cls and Title filled in and nothing else.
+  public static List<AcadDevWindow> VisibleTops(uint[] pids) {
+    var l = new List<AcadDevWindow>();
+    EnumWindows(delegate (IntPtr h, IntPtr x) {
+      if (!IsWindowVisible(h)) return true;
+      uint p; GetWindowThreadProcessId(h, out p);
+      if (pids != null && Array.IndexOf(pids, p) < 0) return true;
+      var w = new AcadDevWindow(); w.H = h; w.Pid = p; w.Visible = true; w.Cls = Cls(h); w.Title = Caption(h); l.Add(w); return true; }, IntPtr.Zero);
+    return l;
+  }
+  // handles of one process's top-level windows (visible or not), front to back
   public static List<IntPtr> HandlesOf(uint pid) {
     var l = new List<IntPtr>();
     EnumWindows(delegate (IntPtr h, IntPtr x) { uint p; GetWindowThreadProcessId(h, out p); if (p == pid) l.Add(h); return true; }, IntPtr.Zero);
+    return l;
+  }
+  // child window handles (all levels)
+  public static List<IntPtr> KidHandles(IntPtr w) {
+    var l = new List<IntPtr>();
+    EnumChildWindows(w, delegate (IntPtr h, IntPtr x) { l.Add(h); return true; }, IntPtr.Zero);
     return l;
   }
   public static List<AcadDevKid> Kids(IntPtr p) {
@@ -168,6 +191,18 @@ public static class AcadDevWin {
     EnumChildWindows(p, delegate (IntPtr h, IntPtr x) {
       var k = new AcadDevKid(); k.H = h; k.Cls = Cls(h); k.Style = GetWindowLong(h, -16); k.Visible = IsWindowVisible(h); k.Text = Text(h); l.Add(k); return true; }, IntPtr.Zero);
     return l;
+  }
+  // Control classes that take input: a #32770 dialog with one of these is a 'dialog', without one a 'messagebox' (see Get-WindowKind).
+  public static bool IsInputClass(string c) { return c == "Edit" || c == "ComboBox" || c == "ListBox" || c == "SysListView32" || c == "ComboLBox"; }
+  // Does this classic dialog have an input control? A task dialog (DirectUIHWND) is read through UI Automation instead: false.
+  public static bool HasInput(IntPtr dlg) {
+    bool input = false, dui = false;
+    EnumChildWindows(dlg, delegate (IntPtr h, IntPtr x) {
+      string c = Cls(h);
+      if (c == "DirectUIHWND") dui = true;
+      else if (IsInputClass(c) && IsWindowVisible(h)) input = true;
+      return true; }, IntPtr.Zero);
+    return input && !dui;
   }
   // AutoCAD's main frame: the visible, unowned top-level window of MFC's frame class (AfxMDIFrame140u on 2024-2026) among the
   // given processes; IntPtr.Zero when there is none (still starting). Message boxes are #32770, the WPF helper is HwndWrapper.
@@ -180,28 +215,35 @@ public static class AcadDevWin {
       return true; }, IntPtr.Zero);
     return found;
   }
+  // The same, looked up in a window list the caller already took with Tops() (one snapshot for a whole scan); null when there is none.
+  public static AcadDevWindow FrameOf(List<AcadDevWindow> all, uint[] pids) {
+    foreach (var w in all)
+      if (w.Visible && w.Owner == IntPtr.Zero && Array.IndexOf(pids, w.Pid) >= 0 && w.Cls.StartsWith("AfxMDIFrame", StringComparison.OrdinalIgnoreCase)) return w;
+    return null;
+  }
   // The same, with fallbacks for the keyboard driver (esc.ps1), which needs some window to aim at: a title that starts like a frame's
   // ("Autodesk AutoCAD 2026 - ...", a vertical's "AutoCAD Electrical 2026 - ..."; not "AutoCAD Message"), then any titled window.
-  // Process.MainWindowHandle is not reliable here: it can be an untitled WPF helper window, and Esc sent there is lost.
+  // Process.MainWindowHandle is not reliable here: it can be an untitled WPF helper window, and Esc sent there is lost. One pass.
   public static IntPtr FrameOrBest(uint pid) {
-    IntPtr frame = FrameOf(new uint[] { pid });
-    if (frame != IntPtr.Zero) return frame;
-    IntPtr titled = IntPtr.Zero, any = IntPtr.Zero;
-    var frameTitle = new System.Text.RegularExpressions.Regex(@"^(Autodesk )?AutoCAD\b.*\b20\d\d\b");
+    IntPtr frame = IntPtr.Zero, titled = IntPtr.Zero, any = IntPtr.Zero;
     EnumWindows(delegate (IntPtr h, IntPtr x) {
       uint p; GetWindowThreadProcessId(h, out p);
       if (p != pid || !IsWindowVisible(h) || GetWindow(h, 4) != IntPtr.Zero) return true;
+      if (Cls(h).StartsWith("AfxMDIFrame", StringComparison.OrdinalIgnoreCase)) { frame = h; return false; }
       string t = Caption(h);
-      if (titled == IntPtr.Zero && frameTitle.IsMatch(t)) titled = h;
+      if (titled == IntPtr.Zero && FrameTitle.IsMatch(t)) titled = h;
       if (any == IntPtr.Zero && t.Length > 0) any = h;
       return true; }, IntPtr.Zero);
-    return titled != IntPtr.Zero ? titled : any;
+    return frame != IntPtr.Zero ? frame : titled != IntPtr.Zero ? titled : any;
   }
   public static void Close(IntPtr h) { PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero); }        // WM_CLOSE
   public static void Cancel(IntPtr h) { PostMessage(h, 0x0111, new IntPtr(2), IntPtr.Zero); }     // WM_COMMAND IDCANCEL
   public static void Click(IntPtr b) { PostMessage(b, 0x00F5, IntPtr.Zero, IntPtr.Zero); }        // BM_CLICK
 }
-'@
+'@ + "`n$ExtraSource"
+  $p = @{ TypeDefinition = $src; ErrorAction = 'Stop' }
+  if ($References) { $p.ReferencedAssemblies = $References }
+  Add-Type @p
 }
 
 . (Join-Path $PSScriptRoot 'blocker-policy.ps1')   # Test-ComRejected and the allowlist / denylist functions
@@ -224,8 +266,11 @@ function Close-RecoveryWindows {
     $policyFile = if ($env:ACAD_DEV_BLOCKERS_FILE) { $env:ACAD_DEV_BLOCKERS_FILE } else { Join-Path $script:Home_ 'blockers.txt' }
     $rules = @((ConvertFrom-BlockerPolicy $(if (Test-Path $policyFile) { Get-Content $policyFile -Encoding UTF8 } else { @() })).Rules)
     $closed = @()
-    foreach ($w in @([AcadDevWin]::Tops() | Where-Object { $_.Visible -and $_.Pid -in $acadPids -and $_.Title -match '^\s*Drawing Recovery' })) {
-      $win = [pscustomobject]@{ Title = $w.Title; Class = $w.Cls; Kind = 'window'; Texts = @(); Buttons = @() }
+    foreach ($w in @([AcadDevWin]::VisibleTops($acadPids) | Where-Object { Test-RecoveryWindow $_.Title })) {
+      # the same Kind the guard's scan gives it (a #32770 with an input control is a dialog, without one a messagebox), so an
+      # allowlist line such as `^Drawing Recovery :: dialog :: report` holds up front too
+      $hasInput = ($w.Cls -eq '#32770') -and [AcadDevWin]::HasInput($w.H)
+      $win = [pscustomobject]@{ Title = $w.Title; Class = $w.Cls; Kind = (Get-WindowKind $w.Cls $hasInput); Texts = @(); Buttons = @() }
       if ((Resolve-BlockerAction $win $rules).Action -eq 'close') { [AcadDevWin]::Close($w.H); $closed += $w.Title }
     }
     if ($closed) { Start-Sleep -Milliseconds 700 }

@@ -48,8 +48,7 @@ function Get-Uia($h) {
 
 function Get-Blockers {
   $all = [AcadDevWin]::Tops()
-  $fh = [AcadDevWin]::FrameOf([uint32[]]$acadPids)
-  $frame = if ($fh -ne [IntPtr]::Zero) { $all | Where-Object { $_.H -eq $fh } | Select-Object -First 1 } else { $null }
+  $frame = [AcadDevWin]::FrameOf($all, [uint32[]]$acadPids)   # from the same snapshot
   $out = @(); $foreign = @(); $update = @()
   foreach ($w in $all) {
     if (-not $w.Visible -or $w.Cloaked) { continue }
@@ -57,16 +56,16 @@ function Get-Blockers {
     $acadOwned = $w.Pid -in $acadPids
     if ($acadOwned) {
       if ($frame -and $w.H -eq $frame.H) { continue }
-      if ($w.Title -match '^(Autodesk )?AutoCAD.* - \[') { continue }   # a drawing window
+      if (Test-DrawingWindow $w.Title) { continue }   # a drawing window
       $isDlg = Test-DialogWindow $w.Cls $w.Title
-      if (-not $isDlg -and $w.Title -match '^\s*Drawing Recovery') { $isDlg = $true }   # whatever its window class: the built-in rule closes it
+      if (-not $isDlg -and (Test-RecoveryWindow $w.Title)) { $isDlg = $true }   # whatever its window class: the built-in rule closes it
       if (-not $isDlg) { continue }
       $texts = @(); $buttons = @(); $hasInput = $false
       $kids = if ($w.Cls -eq '#32770' -or $w.Cls -like 'adesk_dlg*') { @([AcadDevWin]::Kids($w.H)) } else { @() }
       if ($kids -and -not ($kids | Where-Object { $_.Cls -eq 'DirectUIHWND' })) {
         foreach ($k in $kids) {
           if (-not $k.Visible) { continue }
-          if ($k.Cls -in 'Edit', 'ComboBox', 'ListBox', 'SysListView32', 'ComboLBox') { $hasInput = $true }
+          if ([AcadDevWin]::IsInputClass($k.Cls)) { $hasInput = $true }
           elseif ($k.Cls -eq 'Static' -and $k.Text.Trim()) { $texts += $k.Text.Trim() }
           elseif ($k.Cls -eq 'Button' -and ($k.Style -band 0xF) -in 0, 1, 0xB -and $k.Text.Trim()) { $buttons += $k.Text.Trim() }
         }

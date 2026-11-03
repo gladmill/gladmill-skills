@@ -34,8 +34,6 @@ function Finish([int]$code) {
 
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Windows.Forms, System.Drawing
 $helper = @'
-using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices; using System.Threading;
-using System.Windows.Automation;
 
 public class KitEl {
   public AutomationElement E; public string Name = ""; public string Id = ""; public string Type = ""; public string Cls = "";
@@ -48,18 +46,12 @@ public class KitCtl {
 }
 
 public static class KitUi {
-  public delegate bool EnumProc(IntPtr h, IntPtr l);
-  [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr p, EnumProc f, IntPtr l);
-  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
-  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
-  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
   [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
-  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint c);
   [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint f);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
@@ -97,8 +89,6 @@ public static class KitUi {
   }
 
   // ---- windows -------------------------------------------------------------------------------------------------
-  public static string Cls(IntPtr h) { var s = new StringBuilder(256); GetClassName(h, s, 256); return s.ToString(); }
-  public static string Caption(IntPtr h) { var s = new StringBuilder(512); GetWindowText(h, s, 512); return s.ToString(); }
   public static int Style(IntPtr h) { return GetWindowLong(h, -16); }
   public static int CtrlId(IntPtr h) { return GetDlgCtrlID(h); }
   public static uint Pid(IntPtr h) { uint p; GetWindowThreadProcessId(h, out p); return p; }
@@ -122,11 +112,6 @@ public static class KitUi {
   }
   public static bool SetText(IntPtr h, string s) { IntPtr r; return SMTs(h, WM_SETTEXT, IntPtr.Zero, s, SMTO_ABORTIFHUNG, 3000, out r) != IntPtr.Zero; }
 
-  public static List<IntPtr> Kids(IntPtr w) {
-    var l = new List<IntPtr>();
-    EnumChildWindows(w, delegate (IntPtr h, IntPtr x) { l.Add(h); return true; }, IntPtr.Zero);
-    return l;
-  }
   public static RECT Rect(IntPtr h) { RECT r; GetWindowRect(h, out r); return r; }
   // True when no part of the window is on any monitor (a position remembered from a monitor that is gone).
   public static bool OffScreen(IntPtr h) { RECT r = Rect(h); return MonitorFromRect(ref r, 0) == IntPtr.Zero; }
@@ -238,18 +223,18 @@ public static class KitUi {
   // templates place "Name:" before the box), else the text just left of it on the same row.
   public static List<KitCtl> Controls(IntPtr dlg) {
     var all = new List<KitCtl>();
-    foreach (var h in Kids(dlg)) {
-      var k = new KitCtl(); k.H = h; k.Cls = Cls(h); k.Style = Style(h); k.Id = CtrlId(h);
-      k.Kind = KindOf(h, k.Cls, k.Style); k.Visible = IsWindowVisible(h); k.Enabled = IsWindowEnabled(h);
-      if (k.Kind == "edit" && Cls(GetParent(h)).ToLowerInvariant().Contains("combobox")) continue;   // the edit inside an editable drop-down: the combo is the control
+    foreach (var h in AcadDevWin.KidHandles(dlg)) {
+      var k = new KitCtl(); k.H = h; k.Cls = AcadDevWin.Cls(h); k.Style = Style(h); k.Id = CtrlId(h);
+      k.Kind = KindOf(h, k.Cls, k.Style); k.Visible = AcadDevWin.IsVisible(h); k.Enabled = IsWindowEnabled(h);
+      if (k.Kind == "edit" && AcadDevWin.Cls(GetParent(h)).ToLowerInvariant().Contains("combobox")) continue;   // the edit inside an editable drop-down: the combo is the control
       k.Text = (k.Kind == "edit" || k.Kind == "combo" || k.Kind == "list") ? "" : Text(h);
       all.Add(k);
     }
     foreach (var k in all) {
       if (k.Kind == "button" || k.Kind == "check" || k.Kind == "radio" || k.Kind == "ownerdrawn" || k.Kind == "group") { k.Label = k.Text; continue; }
       if (k.Kind != "edit" && k.Kind != "combo" && k.Kind != "list") continue;
-      for (IntPtr p = GetWindow(k.H, 3); p != IntPtr.Zero; p = GetWindow(p, 3)) {   // GW_HWNDPREV
-        string pc = KindOf(p, Cls(p), Style(p));
+      for (IntPtr p = AcadDevWin.GetWindow(k.H, 3); p != IntPtr.Zero; p = AcadDevWin.GetWindow(p, 3)) {   // GW_HWNDPREV
+        string pc = KindOf(p, AcadDevWin.Cls(p), Style(p));
         if (pc == "text") { string t = Text(p); if (Norm(t).Length > 0) { k.Label = t; break; } continue; }
         if (pc == "group") continue;
         if (pc == "edit" || pc == "combo" || pc == "list" || pc == "button" || pc == "check" || pc == "radio") break;
@@ -412,11 +397,8 @@ public static class KitUi {
   }
 }
 '@
-Initialize-AcadWin   # common.ps1: EnumWindows and AutoCAD's main frame come from the shared [AcadDevWin]
-if (-not ('KitUi' -as [type])) {
-  try { Add-Type -ReferencedAssemblies UIAutomationClient, UIAutomationTypes, WindowsBase, System.Windows.Forms, System.Drawing -TypeDefinition $helper -ErrorAction Stop }
-  catch { W ("FAIL 0: the helper did not compile: " + (($Error | Select-Object -First 1 | ForEach-Object { "$_" -replace "\s+", " " }))); Finish 2 }
-}
+try { Initialize-AcadWin -ExtraSource $helper -ExtraUsings 'using System.Threading; using System.Windows.Automation;' -References UIAutomationClient, UIAutomationTypes, WindowsBase, System.Windows.Forms, System.Drawing }   # one compilation: the shared [AcadDevWin] and KitUi
+catch { W ("FAIL 0: the helper did not compile: " + ("$($_.Exception.Message)" -replace "\s+", " ")); Finish 2 }
 
 function Fail($n, $step, $why) {
   W ("FAIL {0} {1}: {2}" -f $n, $step, $why)
@@ -434,18 +416,18 @@ $proc = $null; $frame = [IntPtr]::Zero
 foreach ($p in @(Get-Process acad -EA SilentlyContinue | Sort-Object StartTime -Descending)) {
   $f = [AcadDevWin]::FrameOf([uint32[]]@([uint32]$p.Id)); if ($f -ne [IntPtr]::Zero) { $proc = $p; $frame = $f; break }
 }
-if (-not $proc) { W 'FAIL 0: AutoCAD is not running (no acad.exe with a main window)'; Finish 1 }
+if (-not $proc -or $frame -eq [IntPtr]::Zero) { W 'FAIL 0: AutoCAD is not running (no acad.exe with a main window)'; Finish 1 }
 $apid = [uint32]$proc.Id
 [KitUi]::DpiAware()
 
 function Dialog-Info($h) {
   $r = [KitUi]::Rect($h)
-  [pscustomobject]@{ H = $h; Title = [KitUi]::Caption($h); Cls = [KitUi]::Cls($h); Enabled = [KitUi]::IsWindowEnabled($h)
-    Visible = [KitUi]::IsWindowVisible($h); Front = ([KitUi]::GetForegroundWindow() -eq $h); OffScreen = [KitUi]::OffScreen($h)
+  [pscustomobject]@{ H = $h; Title = [AcadDevWin]::Caption($h); Cls = [AcadDevWin]::Cls($h); Enabled = [KitUi]::IsWindowEnabled($h)
+    Visible = [AcadDevWin]::IsVisible($h); Front = ([KitUi]::GetForegroundWindow() -eq $h); OffScreen = [KitUi]::OffScreen($h)
     Rect = "$($r.L),$($r.T),$($r.R),$($r.B)" }
 }
 # AutoCAD's dialogs, front to back, visible ones only (a hidden dialog can't be answered by a person either)
-function Dialogs { @([AcadDevWin]::HandlesOf($apid) | Where-Object { [KitUi]::IsWindowVisible($_) -and (Test-DialogWindow ([KitUi]::Cls($_)) ([KitUi]::Caption($_))) } | ForEach-Object { Dialog-Info $_ }) }
+function Dialogs { @([AcadDevWin]::VisibleTops([uint32[]]@($apid)) | Where-Object { Test-DialogWindow $_.Cls $_.Title } | ForEach-Object { Dialog-Info $_.H }) }
 function List-Dialogs {
   $d = Dialogs
   if (-not $d) { return @("(none; AutoCAD's main window is " + $(if ([KitUi]::IsWindowEnabled($frame)) { 'enabled' } else { 'disabled: something modal is open' }) + ')') }
@@ -461,15 +443,15 @@ function Until([scriptblock]$probe, [int]$sec = $script:stepTimeout) {
   while ($true) { $v = & $probe; if ($v) { return $v }; if ((Get-Date) -gt $end) { return $null }; Start-Sleep -Milliseconds 200 }
 }
 function Is-Message($h) {
-  if ([KitUi]::Cls($h) -ne '#32770') { return $false }
-  $kids = [KitUi]::Kids($h)
-  if ($kids | Where-Object { [KitUi]::Cls($_) -eq 'DirectUIHWND' }) { return $true }   # task dialog
-  $kinds = @($kids | ForEach-Object { [KitUi]::KindOf($_, [KitUi]::Cls($_), [KitUi]::Style($_)) })
+  if ([AcadDevWin]::Cls($h) -ne '#32770') { return $false }
+  $kids = [AcadDevWin]::KidHandles($h)
+  if ($kids | Where-Object { [AcadDevWin]::Cls($_) -eq 'DirectUIHWND' }) { return $true }   # task dialog
+  $kinds = @($kids | ForEach-Object { [KitUi]::KindOf($_, [AcadDevWin]::Cls($_), [KitUi]::Style($_)) })
   return ($kinds -contains 'button') -and -not ($kinds | Where-Object { $_ -in 'edit', 'combo', 'list', 'check', 'radio' })
 }
 # The target: the handle chosen by dialog/alert; when that window is gone, the newest visible dialog with the same title.
 function Target {
-  if ($script:target -ne [IntPtr]::Zero -and [KitUi]::IsWindow($script:target) -and [KitUi]::IsWindowVisible($script:target)) { return $script:target }
+  if ($script:target -ne [IntPtr]::Zero -and [KitUi]::IsWindow($script:target) -and [AcadDevWin]::IsVisible($script:target)) { return $script:target }
   if ($script:targetTitle) {
     $d = Dialogs | Where-Object { Title-Matches $_.Title $script:targetTitle } | Select-Object -First 1
     if ($d) { $script:target = $d.H; return $d.H }
@@ -482,15 +464,15 @@ function Security-Open { Dialogs | Where-Object { $_.Title -match '^Security\b' 
 function Need-Target($n, $step, [switch]$Act) {
   $t = Until { Target }
   if (-not $t) { Fail $n $step $(if ($script:targetTitle) { "no dialog '$($script:targetTitle)' open" } else { 'no target dialog: start with a dialog or alert step' }) }
-  if ([KitUi]::Caption($t) -match '^Security\b') { Fail $n $step "'$([KitUi]::Caption($t))' is a security prompt; a person answers those" }
+  if ([AcadDevWin]::Caption($t) -match '^Security\b') { Fail $n $step "'$([AcadDevWin]::Caption($t))' is a security prompt; a person answers those" }
   if ($Act) {
     if ($sp = Security-Open) { Fail $n $step "a security prompt is open ([$($sp.Title)]); a person answers it first" }
     # a dialog with a modal one on top is disabled: a person can't use it until that one closes (an alert from its own button)
-    if (-not (Until { [KitUi]::IsWindowEnabled($t) } ([Math]::Min(3, $script:stepTimeout)))) { Fail $n $step ("[$([KitUi]::Caption($t))] is disabled: a dialog on top of it waits first: " + ((List-Dialogs) -join '; ')) }
+    if (-not (Until { [KitUi]::IsWindowEnabled($t) } ([Math]::Min(3, $script:stepTimeout)))) { Fail $n $step ("[$([AcadDevWin]::Caption($t))] is disabled: a dialog on top of it waits first: " + ((List-Dialogs) -join '; ')) }
   }
   return $t
 }
-function Uia-Win32($t) { [KitUi]::Cls($t) -in '#32770' -or [KitUi]::Cls($t) -like 'adesk_dlg*' }
+function Uia-Win32($t) { [AcadDevWin]::Cls($t) -in '#32770' -or [AcadDevWin]::Cls($t) -like 'adesk_dlg*' }
 # Win32 controls of the target matching a label (best match first, visible ones only)
 function Find-Ctl($t, $label, [string[]]$kinds) {
   $all = [KitUi]::Controls($t)
@@ -528,8 +510,8 @@ function Texts($t) {
   @([KitUi]::Descendants($root, 400) | Where-Object { [KitUi]::TypeName($_) -eq 'Text' -and [KitUi]::Name($_).Trim() } | ForEach-Object { [KitUi]::Name($_).Trim() } | Select-Object -Unique)
 }
 function Read-Target($t) {
-  $lines = @("dialog [$([KitUi]::Caption($t))] class=$([KitUi]::Cls($t))")
-  if ((Uia-Win32 $t) -and -not ([KitUi]::Kids($t) | Where-Object { [KitUi]::Cls($_) -eq 'DirectUIHWND' })) {
+  $lines = @("dialog [$([AcadDevWin]::Caption($t))] class=$([AcadDevWin]::Cls($t))")
+  if ((Uia-Win32 $t) -and -not ([AcadDevWin]::KidHandles($t) | Where-Object { [AcadDevWin]::Cls($_) -eq 'DirectUIHWND' })) {
     foreach ($c in [KitUi]::Controls($t)) {
       if (-not $c.Visible -or $c.Kind -in 'group', 'other') { continue }
       $dis = if ($c.Enabled) { '' } else { ' (disabled)' }
@@ -605,7 +587,7 @@ function Find-Items-Popups($want) {
     foreach ($w in $wins) { $found += Find-Items $w $want }
   }
   foreach ($h in [AcadDevWin]::HandlesOf($apid)) {
-    if ($h -eq $frame -or -not [KitUi]::IsWindowVisible($h) -or [KitUi]::Cls($h) -notlike 'HwndWrapper*' -or [KitUi]::GetWindow($h, 4) -ne $frame) { continue }
+    if ($h -eq $frame -or -not [AcadDevWin]::IsVisible($h) -or [AcadDevWin]::Cls($h) -notlike 'HwndWrapper*' -or [AcadDevWin]::GetWindow($h, 4) -ne $frame) { continue }
     $e = [KitUi]::Elem($h); if ($e) { $found += Find-Items $e $want }
   }
   $found
@@ -616,10 +598,10 @@ function Click-Elem($e, $what) {
   if ($root -ne $frame -and [KitUi]::Pid($root) -ne $apid) {
     [KitUi]::Front($frame, $false) | Out-Null; Start-Sleep -Milliseconds 200; $root = [KitUi]::RootAt($x, $y)   # no Alt tap: a recorder would log it
   }
-  if ($root -ne $frame -and [KitUi]::Pid($root) -ne $apid) { return "$what at $x,$y is covered by another program's window [$([KitUi]::Caption($root))] class=$([KitUi]::Cls($root))" }
+  if ($root -ne $frame -and [KitUi]::Pid($root) -ne $apid) { return "$what at $x,$y is covered by another program's window [$([AcadDevWin]::Caption($root))] class=$([AcadDevWin]::Cls($root))" }
   # AutoCAD's own windows: only the frame or a ribbon popup (a slide-out: a WPF window the frame owns, directly or through another popup) may take the click, not a floating palette
-  if ($root -ne $frame -and -not ([KitUi]::Cls($root) -like 'HwndWrapper*' -and [KitUi]::GetAncestor($root, 3) -eq $frame)) {   # 3 = GA_ROOTOWNER: popups of popups too
-    return "$what at $x,$y is covered by AutoCAD's window [$([KitUi]::Caption($root))] class=$([KitUi]::Cls($root)): move or close it"
+  if ($root -ne $frame -and -not ([AcadDevWin]::Cls($root) -like 'HwndWrapper*' -and [KitUi]::GetAncestor($root, 3) -eq $frame)) {   # 3 = GA_ROOTOWNER: popups of popups too
+    return "$what at $x,$y is covered by AutoCAD's window [$([AcadDevWin]::Caption($root))] class=$([AcadDevWin]::Cls($root)): move or close it"
   }
   [KitUi]::Click($x, $y)
   return $null
@@ -705,18 +687,18 @@ function Wait-Started([double]$sec = 2) {
 # the mouse off the ribbon, onto the command line: not over the drawing, where a jumping cursor drags the rubber band of a prompt that
 # waits for a point or distance (and a recorder logs those drags as answers).
 function Ribbon-Rect {
-  $bar = [KitUi]::Kids($frame) | Where-Object { [KitUi]::Cls($_) -like 'AfxControlBar*' -and [KitUi]::Caption($_) -eq 'Ribbon' -and [KitUi]::IsWindowVisible($_) } | Select-Object -First 1
+  $bar = [AcadDevWin]::KidHandles($frame) | Where-Object { [AcadDevWin]::Cls($_) -like 'AfxControlBar*' -and [AcadDevWin]::Caption($_) -eq 'Ribbon' -and [AcadDevWin]::IsVisible($_) } | Select-Object -First 1
   if ($bar) { [KitUi]::Rect($bar) } else { $null }
 }
 # The command line's rectangle: the untitled WPF window of AutoCAD's that holds a CommandLineControl (AutoCAD 2026, floating or docked)
 $script:cmdLine = [IntPtr]::Zero; $script:cmdLineLooked = $false
 function CommandLine-Rect {
-  if ($script:cmdLine -eq [IntPtr]::Zero -or -not [KitUi]::IsWindow($script:cmdLine) -or -not [KitUi]::IsWindowVisible($script:cmdLine)) {
+  if ($script:cmdLine -eq [IntPtr]::Zero -or -not [KitUi]::IsWindow($script:cmdLine) -or -not [AcadDevWin]::IsVisible($script:cmdLine)) {
     if ($script:cmdLine -eq [IntPtr]::Zero -and $script:cmdLineLooked) { return $null }   # looked once this run and found none (hidden with Ctrl+9)
     $script:cmdLine = [IntPtr]::Zero; $script:cmdLineLooked = $true
     # floating: an untitled top-level WPF window owned by the main window; docked: a child of it. Small ones only (not the ribbon's)
-    foreach ($h in @([AcadDevWin]::HandlesOf($apid) | Where-Object { [KitUi]::GetWindow($_, 4) -eq $frame }) + @([KitUi]::Kids($frame))) {
-      if (-not [KitUi]::IsWindowVisible($h) -or [KitUi]::Cls($h) -notlike 'HwndWrapper*' -or [KitUi]::Caption($h)) { continue }
+    foreach ($h in @([AcadDevWin]::HandlesOf($apid) | Where-Object { [AcadDevWin]::GetWindow($_, 4) -eq $frame }) + @([AcadDevWin]::KidHandles($frame))) {
+      if (-not [AcadDevWin]::IsVisible($h) -or [AcadDevWin]::Cls($h) -notlike 'HwndWrapper*' -or [AcadDevWin]::Caption($h)) { continue }
       $wr = [KitUi]::Rect($h); if ($wr.B - $wr.T -gt 300) { continue }
       $e = [KitUi]::Elem($h)
       if ($e -and $e.FindFirst([System.Windows.Automation.TreeScope]::Subtree, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'CommandLineControl')))) { $script:cmdLine = $h; break }
@@ -747,7 +729,7 @@ $steps = @(if (Test-Path $stepsFile) { Get-Content $stepsFile -Encoding UTF8 } e
 $script:total = $steps.Count
 $script:stepTimeout = [Math]::Max(1, $StepTimeoutSec)
 $script:target = [IntPtr]::Zero; $script:targetTitle = $null
-W ("acad pid {0}, frame [{1}]{2}" -f $apid, [KitUi]::Caption($frame), $(if ([KitUi]::GetForegroundWindow() -eq $frame) { ', in front' } else { '' }))
+W ("acad pid {0}, frame [{1}]{2}" -f $apid, [AcadDevWin]::Caption($frame), $(if ([KitUi]::GetForegroundWindow() -eq $frame) { ', in front' } else { '' }))
 if ($script:total -eq 0) { W 'FAIL 0: no steps (ui.txt is empty)'; Finish 2 }
 $n = 0
 foreach ($step in $steps) {
@@ -799,7 +781,7 @@ foreach ($step in $steps) {
       'expect' {
         $t = Need-Target $n $step
         # the title, texts and values; not the drop-downs' and lists' other items (`expect Doors` must not pass on an unselected item)
-        $seen = { @([KitUi]::Caption($t)) + (Texts $t) + @((Read-Target $t) -replace '  items: .*?( \(disabled\))?$', '$1') }
+        $seen = { @([AcadDevWin]::Caption($t)) + (Texts $t) + @((Read-Target $t) -replace '  items: .*?( \(disabled\))?$', '$1') }
         $text = & $seen
         $ok = Until { $all = (& $seen) -join "`n"; if ($all -match $arg) { $true } } ([Math]::Min(3, $script:stepTimeout))
         if (-not $ok) { Fail $n $step ("no match for /$arg/ in: " + (($text | Select-Object -Unique) -join ' / ')) }
@@ -879,7 +861,7 @@ foreach ($step in $steps) {
       'press' {
         $t = Need-Target $n $step -Act
         if (-not $arg) { Fail $n $step 'press needs the button text' }
-        if ((Uia-Win32 $t) -and -not ([KitUi]::Kids($t) | Where-Object { [KitUi]::Cls($_) -eq 'DirectUIHWND' })) {
+        if ((Uia-Win32 $t) -and -not ([AcadDevWin]::KidHandles($t) | Where-Object { [AcadDevWin]::Cls($_) -eq 'DirectUIHWND' })) {
           $f = Find-Ctl $t $arg @('button', 'ownerdrawn')
           if ($f.Hit) { $err = [KitUi]::Press($f.Hit); if ($err) { Fail $n $step $err }; $msg = "pressed [$([KitUi]::Show($f.Hit.Text))]"; break }
         }
@@ -899,7 +881,7 @@ foreach ($step in $steps) {
         if (-not $arg -and $h -eq [IntPtr]::Zero) { Fail $n $step 'no target: give the title (closed <title>) or start with dialog/alert' }
         $gone = Until {
           if ($arg) { -not (Dialogs | Where-Object { Title-Matches $_.Title $arg }) }
-          else { -not [KitUi]::IsWindow($h) -or -not [KitUi]::IsWindowVisible($h) }
+          else { -not [KitUi]::IsWindow($h) -or -not [AcadDevWin]::IsVisible($h) }
         }
         if (-not $gone) { Fail $n $step "[$title] is still open" }
         $msg = "[$title] closed"
@@ -907,9 +889,9 @@ foreach ($step in $steps) {
       'front' {
         $h = if ($arg) { (Until { Dialogs | Where-Object { Title-Matches $_.Title $arg } | Select-Object -First 1 }).H } elseif (Target) { Target } else { $frame }
         if (-not $h) { Fail $n $step "no dialog '$arg' open" }
-        if ([KitUi]::OffScreen($h)) { [KitUi]::MoveOnScreen($h); W "  moved [$([KitUi]::Caption($h))] onto the screen" }
+        if ([KitUi]::OffScreen($h)) { [KitUi]::MoveOnScreen($h); W "  moved [$([AcadDevWin]::Caption($h))] onto the screen" }
         $ok = [KitUi]::Front($h)
-        $msg = "[$([KitUi]::Caption($h))] in front: $ok"
+        $msg = "[$([AcadDevWin]::Caption($h))] in front: $ok"
       }
       'keys' {
         $t = Need-Target $n $step -Act
@@ -917,12 +899,12 @@ foreach ($step in $steps) {
         # to the front without the Alt tap (a recorder would see AutoCAD's menu mode as a dialog): the quiet way, else a click on its title bar
         if (-not [KitUi]::Front($t, $false)) {
           $r = [KitUi]::Rect($t); $tx = [int](($r.L + $r.R) / 2); $ty = $r.T + 12
-          if ([KitUi]::RootAt($tx, $ty) -ne $t) { Fail $n $step "[$([KitUi]::Caption($t))] is not in front and its title bar is covered: no keystrokes sent" }
+          if ([KitUi]::RootAt($tx, $ty) -ne $t) { Fail $n $step "[$([AcadDevWin]::Caption($t))] is not in front and its title bar is covered: no keystrokes sent" }
           [KitUi]::Click($tx, $ty); Start-Sleep -Milliseconds 300
         }
-        if ([KitUi]::GetForegroundWindow() -ne $t) { Fail $n $step "could not bring [$([KitUi]::Caption($t))] to the front for keystrokes" }
+        if ([KitUi]::GetForegroundWindow() -ne $t) { Fail $n $step "could not bring [$([AcadDevWin]::Caption($t))] to the front for keystrokes" }
         [System.Windows.Forms.SendKeys]::SendWait($arg)
-        $msg = "keys sent to [$([KitUi]::Caption($t))]"
+        $msg = "keys sent to [$([AcadDevWin]::Caption($t))]"
       }
       'click' {
         if ($arg -notmatch '^\s*(-?\d+)\s*,\s*(-?\d+)\s*$') {
@@ -931,7 +913,7 @@ foreach ($step in $steps) {
           $t = Need-Target $n $step -Act
           if ([KitUi]::OffScreen($t)) { [KitUi]::MoveOnScreen($t) }
           $cr = $null
-          if ((Uia-Win32 $t) -and -not ([KitUi]::Kids($t) | Where-Object { [KitUi]::Cls($_) -eq 'DirectUIHWND' })) {
+          if ((Uia-Win32 $t) -and -not ([AcadDevWin]::KidHandles($t) | Where-Object { [AcadDevWin]::Cls($_) -eq 'DirectUIHWND' })) {
             $f = Find-Ctl $t $arg @('button', 'ownerdrawn', 'check', 'radio')
             if ($f.Hit) {
               if (-not $f.Hit.Enabled) { Fail $n $step "'$arg' is disabled" }
@@ -946,19 +928,19 @@ foreach ($step in $steps) {
               $cr = @{ X = [int]($e.X + $e.W / 2); Y = [int]($e.Y + $e.H / 2) }
             }
           }
-          if (-not $cr) { Fail $n $step "no control '$arg' in [$([KitUi]::Caption($t))] (read lists them)" }
+          if (-not $cr) { Fail $n $step "no control '$arg' in [$([AcadDevWin]::Caption($t))] (read lists them)" }
           $root = [KitUi]::RootAt($cr.X, $cr.Y)
           if ($root -ne $t) { [KitUi]::Front($t, $false) | Out-Null; Start-Sleep -Milliseconds 200; $root = [KitUi]::RootAt($cr.X, $cr.Y) }
-          if ($root -ne $t) { Fail $n $step "'$arg' is covered by [$([KitUi]::Caption($root))]" }
-          $title = [KitUi]::Caption($t)   # before the click: a button that closes the dialog takes its title with it
+          if ($root -ne $t) { Fail $n $step "'$arg' is covered by [$([AcadDevWin]::Caption($root))]" }
+          $title = [AcadDevWin]::Caption($t)   # before the click: a button that closes the dialog takes its title with it
           [KitUi]::Click($cr.X, $cr.Y); Start-Sleep -Milliseconds 200; Park-Mouse   # not left over the drawing if the command now asks for a point
           $msg = "clicked '$arg' in [$title]"
           break
         }
         $x = [int]$Matches[1]; $y = [int]$Matches[2]; $root = [KitUi]::RootAt($x, $y)
         if ($sp = Security-Open) { Fail $n $step "a security prompt is open ([$($sp.Title)]); a person answers it first" }
-        if ([KitUi]::Pid($root) -ne $apid) { Fail $n $step "the point is on another program's window [$([KitUi]::Caption($root))]" }
-        [KitUi]::Click($x, $y); Mouse-Off-Ribbon; $msg = "clicked $x,$y on [$([KitUi]::Caption($root))]"
+        if ([KitUi]::Pid($root) -ne $apid) { Fail $n $step "the point is on another program's window [$([AcadDevWin]::Caption($root))]" }
+        [KitUi]::Click($x, $y); Mouse-Off-Ribbon; $msg = "clicked $x,$y on [$([AcadDevWin]::Caption($root))]"
       }
       'move' {
         if ($arg -notmatch '^\s*(-?\d+)\s*,\s*(-?\d+)\s*$') { Fail $n $step 'expected move <x>,<y> (screen pixels)' }
