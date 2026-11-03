@@ -27,8 +27,7 @@
 - A command waiting at the command line (no window) shows as `CMDACTIVE` 1 with `NO BLOCKERS`: that is a prompt, use `esc`.
 - COM answers "no answer within 8 s" in the report when AutoCAD is computing or a call waits at a prompt/dialog; that is not an error of the report.
 - AutoCAD's Drawing Recovery window (shown when AutoCAD restarts after a crash with unsaved drawings; a run can't use the drawing until
-  it is closed) is closed by the guard on its own (built-in rule, WM_CLOSE, which a dialog treats as Cancel; `acad-cmd.ps1` also runs
-  the guard while attaching). Closing it should leave the recovered files where AutoCAD keeps them (untested here); reopen them by
+  it is closed) is closed by the guard on its own (built-in rule, WM_CLOSE, which a dialog treats as Cancel; also done up front before `run`/`query` attach and before `ui`). Closing it should leave the recovered files where AutoCAD keeps them (untested here); reopen them by
   hand (`DRAWINGRECOVERY`) if you need them. A `blockers.txt` line `^Drawing Recovery :: any :: report` keeps it open.
 - A Windows Update "restart to install" prompt belongs to another process and can't be dismissed from the automation session. The
   report notes it (never touches it); dismiss it by hand, or on a VM you own run `harden-automation-vm.ps1` once (opt-in: turns off

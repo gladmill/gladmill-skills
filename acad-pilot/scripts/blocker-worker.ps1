@@ -202,26 +202,27 @@ try {
   }
   if (-not $NoShot) { try { Save-Screenshot (Join-Path $script:Out 'blockers.png') } catch { } }
   $applied = 0; $notes = @{}; $before = $null
-  $scan = Get-Blockers
   $actions = @{}
-  foreach ($w in $scan.Windows) { $actions[[string]$w.H] = Resolve-BlockerAction $w $rules }
-  $lockNote = ''
+  $lockNote = ''; $locked = $false
   if ($Apply) {
-    # one guard at a time applies actions (lock file with pid + stale timeout); a second one waits up to 10 s, then only reports
-    if (Enter-BlockerLock $lockFile 10) {
-      try {
-        $scan = Get-Blockers   # look again: another guard may have dealt with a window while this one waited
-        $actions = @{}; foreach ($w in $scan.Windows) { $actions[[string]$w.H] = Resolve-BlockerAction $w $rules }
-        foreach ($w in $scan.Windows) {
-          $a = $actions[[string]$w.H]
-          if ($a.Action -eq 'report') { continue }
-          $notes[[string]$w.H] = Invoke-Action $w $a
-          if ($notes[[string]$w.H] -like 'done*') { $applied++ }
-        }
-        if ($notes.Count) { Start-Sleep -Milliseconds 500; $before = $scan; $scan = Get-Blockers; foreach ($w in $scan.Windows) { if (-not $actions.ContainsKey([string]$w.H)) { $actions[[string]$w.H] = Resolve-BlockerAction $w $rules } } }
-      } finally { Exit-BlockerLock $lockFile }
-    } else { $lockNote = 'another guard is applying actions right now: this one only reports' }
+    # one guard at a time applies actions (lock file with pid + stale timeout); a second one waits up to 10 s, then only reports.
+    # The scan is taken under the lock, so a window another guard dealt with meanwhile is not acted on twice.
+    $locked = Enter-BlockerLock $lockFile 10
+    if (-not $locked) { $lockNote = 'another guard is applying actions right now: this one only reports' }
   }
+  try {
+    $scan = Get-Blockers
+    foreach ($w in $scan.Windows) { $actions[[string]$w.H] = Resolve-BlockerAction $w $rules }
+    if ($locked) {
+      foreach ($w in $scan.Windows) {
+        $a = $actions[[string]$w.H]
+        if ($a.Action -eq 'report') { continue }
+        $notes[[string]$w.H] = Invoke-Action $w $a
+        if ($notes[[string]$w.H] -like 'done*') { $applied++ }
+      }
+      if ($notes.Count) { Start-Sleep -Milliseconds 500; $before = $scan; $scan = Get-Blockers; foreach ($w in $scan.Windows) { if (-not $actions.ContainsKey([string]$w.H)) { $actions[[string]$w.H] = Resolve-BlockerAction $w $rules } } }
+    }
+  } finally { if ($locked) { Exit-BlockerLock $lockFile } }
   $blocking = @($scan.Windows | Where-Object { $_.Blocking })
   $com = Get-ComState
   $frameState = if (-not $scan.Frame) { 'main frame not found (AutoCAD still starting?)' } elseif ([AcadBlk]::IsEnabled($scan.Frame.H)) { 'main frame enabled' } else { 'main frame DISABLED: a modal window is open' }

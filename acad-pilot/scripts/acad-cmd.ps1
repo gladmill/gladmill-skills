@@ -21,6 +21,8 @@ try {
   # rejected while a modal window is open. Retry a few times; before the last tries let the blocker guard deal with what it is
   # allowed to (the allowlist, and the built-in rule that closes AutoCAD's Drawing Recovery window), and say in words what is in the way.
   if (-not (Get-Process acad -ErrorAction SilentlyContinue)) { throw "AutoCAD is not running: start it first (start-acad.ps1 | acad-dev.sh start)." }
+  $rec = @(Close-RecoveryWindows)   # up front, as before: a Drawing Recovery window must not cost the retry window below
+  if ($rec) { W "guard: closed $($rec -join ', ') (built-in Drawing Recovery rule)"; Start-Sleep -Seconds 1 }
   $acad = $null; $guarded = $false
   for ($try = 0; $try -lt 3 -and -not $acad; $try++) {
     try { $acad = [Runtime.InteropServices.Marshal]::GetActiveObject('AutoCAD.Application') }
@@ -35,7 +37,7 @@ try {
     }
   }
   if (-not $acad) {
-    $g = Get-BlockerReport -NoShot
+    $g = Get-BlockerReport -NoShot -TimeoutSec 40
     throw "AutoCAD is not answering COM. $(if ($g.Blocked) { $g.Text } else { 'A modal dialog may be open (a licence/sign-in window, or a command waiting at a prompt): see the screenshot in out\screen.png (acad-dev.sh screen), dismiss it, and retry.' })"
   }
   $doc = try { $acad.ActiveDocument } catch { $null }   # COM can throw when no drawing is open (Start tab)
@@ -55,7 +57,8 @@ try {
     catch {
       # still rejected after the retry window: say what is in the way. A query is not repeated on its own (it may not be safe to).
       if (Test-ComRejected $_) {
-        $g = Get-BlockerReport -Apply:((Test-BlockerAutoAction) -and (Current))
+        $g = Get-BlockerReport -Apply:((Test-BlockerAutoAction) -and (Current)) -TimeoutSec 40
+        $script:BlockerReported = $true
         if ($g.Applied -gt 0) { W 'guard: an allowlisted window was dealt with; the query was not repeated (it may not be safe to repeat): run it again' }
         W $g.Text
       }
@@ -77,7 +80,7 @@ try {
       # a rejected SendCommand did not run, so it is safe to repeat once after the guard dealt with an allowlisted window
       $text = $c -replace '\\n', "`n"
       Invoke-Guarded { $doc.SendCommand($text) } "SendCommand $n" { Current } | Out-Null
-      if (Current) { Add-Content $prog "back $n" }
+      if (Current) { Add-Content $prog "back $n" } else { Stop-Superseded }   # stopped-<RunId>.txt promptly: run-in-session waits for it after Esc
       Start-Sleep -Seconds $WaitSec
     }
     if (-not (Current)) { Stop-Superseded }
@@ -94,7 +97,7 @@ try {
 } catch {
   W "ERROR: $_"
   # a COM call AutoCAD rejected anywhere else (attach, first reads): say what is in the way, unless the message already does
-  if ((Test-ComRejected $_) -and "$_" -notmatch 'BLOCKED BY:') { try { $g = Get-BlockerReport -NoShot; W $g.Text } catch { } }
+  if ((Test-ComRejected $_) -and "$_" -notmatch 'BLOCKED BY:' -and -not $script:BlockerReported) { try { $g = Get-BlockerReport -NoShot -TimeoutSec 40; W $g.Text } catch { } }
 }
 if (-not $NoShot) {
   try { Save-Screenshot (Join-Path $out 'screen.png'); W "screenshot ok" } catch { W "screenshot ERROR: $_" }

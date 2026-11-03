@@ -448,6 +448,8 @@ function Fail($n, $step, $why) {
   Finish 1
 }
 
+# before the first step: AutoCAD's Drawing Recovery window (built-in rule only; ui never applies the allowlist) would hold every step up
+$rec = @(Close-RecoveryWindows); if ($rec) { W "guard: closed $($rec -join ', ') (built-in Drawing Recovery rule)"; Start-Sleep -Seconds 1 }
 $proc = $null; $frame = [IntPtr]::Zero
 foreach ($p in @(Get-Process acad -EA SilentlyContinue | Sort-Object StartTime -Descending)) {
   $f = [KitUi]::Frame([uint32]$p.Id); if ($f -ne [IntPtr]::Zero) { $proc = $p; $frame = $f; break }

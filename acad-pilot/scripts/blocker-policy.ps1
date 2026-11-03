@@ -60,10 +60,10 @@ function Test-ButtonMatch([string]$A, [string]$B) {
 
 function Get-BlockingState {
   # Does this window actually block AutoCAD? A licensing / sign-in window or a message box counts only when the main frame is
-  # disabled, or (licensing) it is in front of the frame or owned by it. Frame unknown (AutoCAD still starting) counts as blocking.
+  # disabled, or (licensing) it is in front of the frame or owned by it. Frame unknown (AutoCAD still starting): every kind counts as blocking.
   # Any other dialog blocks only when it is enabled and the frame is disabled.
   param([string]$Kind, [bool]$Enabled, [bool]$FrameKnown, [bool]$FrameEnabled, [bool]$InFront = $false, [bool]$Owned = $false)
-  if (-not $FrameKnown) { return ($Kind -in 'licensing', 'messagebox') }
+  if (-not $FrameKnown) { return $true }   # AutoCAD still starting: any dialog-like window (Drawing Recovery, Component Updates, licensing...) counts
   if (-not $FrameEnabled) { return ($Kind -eq 'licensing') -or $Enabled }
   if ($Kind -eq 'licensing') { return ($InFront -or $Owned) }
   return $false
@@ -83,8 +83,10 @@ function Enter-BlockerLock {
       try {
         $age = ((Get-Date) - (Get-Item $Path -EA Stop).LastWriteTime).TotalSeconds
         $owner = ("$(Get-Content $Path -Raw -EA SilentlyContinue)".Trim() -split ' ')[0]
-        $alive = $owner -match '^\d+$' -and [bool](Get-Process -Id ([int]$owner) -EA SilentlyContinue)
-        if ($age -gt $StaleSec -or -not $alive) { Remove-Item $Path -Force -EA SilentlyContinue; continue }
+        # an empty or unreadable file is a holder that is still writing its pid: held, unless it has stayed that way for a few seconds
+        $known = $owner -match '^\d+$'
+        $dead = if ($known) { -not (Get-Process -Id ([int]$owner) -EA SilentlyContinue) } else { $age -gt 5 }
+        if ($age -gt $StaleSec -or $dead) { Remove-Item $Path -Force -EA SilentlyContinue; continue }
       } catch { }
     }
     if ((Get-Date) -gt $end) { return $false }
@@ -136,13 +138,13 @@ function Resolve-BlockerAction {
   if ($W.Kind -in $script:BlockerReportOnlyKinds) { return [pscustomobject]@{ Action = 'report'; Button = $null; Source = 'default'; Reason = "$($W.Kind) window: report only" } }
   foreach ($r in @($Rules)) {
     if ("$($W.Title)" -notmatch "(?i)$($r.Title)") { continue }
-    if ($r.Kind -eq 'class') { if ("$($W.Class)" -notmatch "(?i)$($r.Class)") { continue } }
+    if ($r.Kind -eq 'class') { if ("$($W.Class)" -cnotmatch $r.Class) { continue } }   # the class regex is case-sensitive, as written
     elseif ($r.Kind -ne 'any') { if ($W.Kind -ne $r.Kind) { continue } }
     if ($r.Action -eq 'press') {
-      # the button must exist, and must not be one a person has to choose (Save, Yes, Load, Accept ...)
-      if ((ConvertTo-ButtonKey $r.Button) -match $script:BlockerDenyButton) { return [pscustomobject]@{ Action = 'report'; Button = $null; Source = 'denylist'; Reason = "never presses [$($r.Button)]: a person decides that" } }
-      # no such button in this window: the rule does not apply, later rules still may
+      # no such button in this window: the rule does not apply, later rules still may (checked before the button is judged)
       if (-not (@($W.Buttons) | Where-Object { Test-ButtonMatch $_ $r.Button })) { continue }
+      # the button exists but is one a person has to choose (Save, Yes, Load, Accept ...)
+      if ((ConvertTo-ButtonKey $r.Button) -match $script:BlockerDenyButton) { return [pscustomobject]@{ Action = 'report'; Button = $null; Source = 'denylist'; Reason = "never presses [$($r.Button)]: a person decides that" } }
     }
     $what = if ($r.Button) { "$($r.Action) $($r.Button)" } else { $r.Action }
     return [pscustomobject]@{ Action = $r.Action; Button = $r.Button; Source = "allowlist line $($r.Line)"; Reason = "allowlist: $what" }

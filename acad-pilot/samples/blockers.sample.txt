@@ -5,7 +5,7 @@
 # One rule per line, three fields separated by " :: " (space, two colons, space):
 #     <title regex> :: <kind> :: <action>
 #   title regex  .NET regex, case-insensitive, matched anywhere in the window title (^ and $ anchor it)
-#   kind         any | dialog | messagebox | winforms | wpf | class=<regex on the window class, case as written>
+#   kind         any | dialog | messagebox | winforms | wpf | class=<regex on the window class, case-sensitive>
 #                (only dialog-like windows of acad.exe are looked at: Win32/MFC/DCL dialogs, message boxes, titled WinForms/WPF windows)
 #   action       close            close the window (WM_CLOSE, then Cancel for a classic dialog)
 #                press <button>   press the button with that label ("&" ignored, case-insensitive); if the window has no such

@@ -44,7 +44,7 @@ function Invoke-InSession {
     # A process of its own with its output in files, so the timeout (and -OnPoll) hold here too: a worker stuck in a COM call
     # that waits for a dialog is ended after $TimeoutSec instead of hanging this script for ever. -OnPoll returning $true is the
     # stall path: the worker is ended too (task mode leaves it running), $script:WorkerKilled says so, and the exit code is left alone.
-    $script:WorkerKilled = $false
+    $killed = $false; $entryCode = $global:LASTEXITCODE   # per call: a nested Invoke-InSession (from -OnPoll) must not change this call's result
     $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$Script`"") + @($ScriptArgs -split ' ' | Where-Object { $_ })
     $tag = [guid]::NewGuid().ToString('N'); $so = Join-Path $script:Out "iis-$tag.out"; $se = Join-Path $script:Out "iis-$tag.err"
     $psExe = if ($env:ACAD_DEV_PS_EXE) { $env:ACAD_DEV_PS_EXE } else { 'powershell' }   # ACAD_DEV_PS_EXE: for tests only
@@ -59,7 +59,7 @@ function Invoke-InSession {
       Start-Sleep -Milliseconds 300
     }
     if ($timedOut -or $stoppedWaiting) {
-      $script:WorkerKilled = $true
+      $killed = $true
       if (Get-Command taskkill -EA SilentlyContinue) { & taskkill /PID $p.Id /T /F 2>&1 | Out-Null } else { Stop-Process -Id $p.Id -Force -EA SilentlyContinue }
       [void]$p.WaitForExit(5000)   # its files are not read or removed while it still holds them
     }
@@ -68,7 +68,8 @@ function Invoke-InSession {
       if (Test-Path $f) { $t = try { $fs = New-Object IO.FileStream($f, 'Open', 'Read', 'ReadWrite'); try { (New-Object IO.StreamReader($fs, $enc)).ReadToEnd() } finally { $fs.Dispose() } } catch { '' }; if ($t) { $t -split "`r?`n" | Where-Object { $_ -ne '' } }; Remove-Item $f -Force -EA SilentlyContinue }
     }
     if ($timedOut) { 'TIMEOUT waiting for the task' }
-    if (-not $script:WorkerKilled) { $global:LASTEXITCODE = $p.ExitCode }   # the child's own code, exactly
+    $script:WorkerKilled = $killed
+    $global:LASTEXITCODE = $(if ($killed) { $entryCode } else { $p.ExitCode })   # the child's own code, exactly; left alone when it was ended
     return
   }
   if ("$Script$($script:Home_)" -match '\s') { throw "Remote mode: the scripts folder and ACAD_DEV_HOME must not contain spaces ($Script, $($script:Home_))" }
@@ -115,6 +116,51 @@ function Test-BlockerAutoAction {
   return ("$env:ACAD_DEV_BLOCKER_ACTIONS".Trim() -ne '0')
 }
 
+function Close-RecoveryWindows {
+  # Up front, before attaching: closes AutoCAD's "Drawing Recovery" windows by the guard's built-in rule (same policy, so a blockers.txt
+  # `report` line or ACAD_DEV_BLOCKER_ACTIONS=0 keeps them open). A cheap title scan of acad.exe's own windows, no report, no screenshot,
+  # no scheduled task; a restart after a crash that reopens a drawing must not cost the COM retry window. Returns the titles closed.
+  # WM_CLOSE (a dialog treats it as Cancel: nothing is saved or deleted). Never throws.
+  try {
+    if (-not (Test-BlockerAutoAction)) { return @() }
+    $acadPids = @(Get-Process acad -EA SilentlyContinue | ForEach-Object { [uint32]$_.Id })
+    if (-not $acadPids) { return @() }
+    if (-not ('AcadDevRecovery' -as [type])) {
+      Add-Type -TypeDefinition @'
+using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
+public static class AcadDevRecovery {
+  delegate bool EP(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EP f, IntPtr l);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+  public static List<string[]> Find(uint[] pids, string prefix) {
+    var l = new List<string[]>();
+    EnumWindows(delegate (IntPtr h, IntPtr x) {
+      if (!IsWindowVisible(h)) return true;
+      uint pid; GetWindowThreadProcessId(h, out pid); if (Array.IndexOf(pids, pid) < 0) return true;
+      var t = new StringBuilder(512); GetWindowText(h, t, 512); if (!t.ToString().TrimStart().StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return true;
+      var c = new StringBuilder(256); GetClassName(h, c, 256); l.Add(new[] { h.ToString(), t.ToString(), c.ToString() }); return true; }, IntPtr.Zero);
+    return l;
+  }
+  public static void Close(long h) { PostMessage(new IntPtr(h), 0x0010, IntPtr.Zero, IntPtr.Zero); }
+}
+'@
+    }
+    $policyFile = if ($env:ACAD_DEV_BLOCKERS_FILE) { $env:ACAD_DEV_BLOCKERS_FILE } else { Join-Path $script:Home_ 'blockers.txt' }
+    $rules = @((ConvertFrom-BlockerPolicy $(if (Test-Path $policyFile) { Get-Content $policyFile -Encoding UTF8 } else { @() })).Rules)
+    $closed = @()
+    foreach ($w in [AcadDevRecovery]::Find($acadPids, 'Drawing Recovery')) {
+      $win = [pscustomobject]@{ Title = $w[1]; Class = $w[2]; Kind = 'window'; Texts = @(); Buttons = @() }
+      if ((Resolve-BlockerAction $win $rules).Action -eq 'close') { [AcadDevRecovery]::Close([long]$w[0]); $closed += $w[1] }
+    }
+    if ($closed) { Start-Sleep -Milliseconds 700 }
+    return @($closed)
+  } catch { return @() }
+}
+
 function Get-BlockerReport {
   # Looks at what is blocking AutoCAD (blocker-worker.ps1 in the interactive session) and returns Blocked (bool), Windows, Applied
   # (allowlisted actions that worked) and Text (the report, "BLOCKED BY: ..." first when something blocks). -Apply: also do what
@@ -145,18 +191,18 @@ function Invoke-Guarded {
     if (-not (Test-ComRejected $_)) { throw }
     $first = $_
     if ($Current -and -not (& $Current)) { throw "$What was rejected and this run is no longer current: not retried" }
-    $g = Get-BlockerReport -Apply:(Test-BlockerAutoAction)
+    $g = Get-BlockerReport -Apply:(Test-BlockerAutoAction) -TimeoutSec 40
+    $script:BlockerReported = $true   # the error below carries (or deliberately lacks) the report: callers must not add a second one
     if ($g.Applied -gt 0) {
       Start-Sleep -Seconds 1
       if ($Current -and -not (& $Current)) { throw "${What}: this run is no longer current after the guard dealt with a window: not resent" }
       try { return (& $Op) } catch {
         if (-not (Test-ComRejected $_)) { throw }
-        $g = Get-BlockerReport
+        $g = Get-BlockerReport -TimeoutSec 40
         throw "$What was still rejected after the allowlist dealt with a window.`n$($g.Text)"
       }
     }
-    if ($g.Blocked) { throw "$What was rejected by AutoCAD.`n$($g.Text)" }
-    throw $first
+    throw "$What was rejected by AutoCAD.`n$($g.Text)"   # also when nothing blocks: the report then shows the command line state
   }
 }
 

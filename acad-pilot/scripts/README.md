@@ -79,19 +79,19 @@ Review Results$ :: wpf :: close
 ```
 
 - title regex: .NET regex, case-insensitive, matched anywhere in the title.
-- kind: `any`, `dialog`, `messagebox`, `winforms`, `wpf`, or `class=<regex>` on the window class (the regex is used as written; only the word `class` is case-insensitive). Only dialog-like windows of acad.exe are looked at: Win32/MFC/DCL dialogs, message boxes, titled WinForms and WPF windows.
+- kind: `any`, `dialog`, `messagebox`, `winforms`, `wpf`, or `class=<regex>` on the window class (matched case-sensitively, as written; only the word `class` is case-insensitive). Only dialog-like windows of acad.exe are looked at: Win32/MFC/DCL dialogs, message boxes, titled WinForms and WPF windows.
 - action: `close` (WM_CLOSE, then Cancel for a classic dialog), `press <button>` (that button's label, `&` ignored, case-insensitive, in Win32, WinForms and WPF windows alike; if the window has no such button the rule does not apply and later rules are tried), `report` (do nothing; the default for every window no rule names).
 - First matching rule wins; `#` comments and blank lines are ignored; a bad line is ignored with a `warning:` line in the report.
 
 Allowlisted actions are applied only with `blockers.ps1 -Apply` (`blockers --apply`) and, automatically, by the guard inside `run`
 (a stalled command), `wait` (while waiting) and a rejected `SendCommand`; each logs what it did, then continues (one guard applies actions at a time: a lock file `out\blockers.lock` with the pid, stale after 120 s; a second guard waits up to 10 s, then only reports; each call has its own result file and task name; a rejected `SendCommand` is not resent if its run was stopped or replaced meanwhile): the stalled command
 carries on, `wait` waits again, a rejected `SendCommand` is sent once more. Set `ACAD_DEV_BLOCKER_ACTIONS=0` (on the machine
-running the scripts; in remote mode on the Windows box) to make the guard report only. `ui` never applies the allowlist.
+running the scripts; in remote mode on the Windows box) to make the guard report only. `ui` never applies the allowlist (it only closes a Drawing Recovery window before its first step).
 
 **Built-in rule: Drawing Recovery.** AutoCAD's "Drawing Recovery" window, which appears when AutoCAD restarts after a crash with unsaved
 drawings and keeps COM from answering, is closed by the guard without any `blockers.txt` line (WM_CLOSE, which a dialog treats as
 Cancel: nothing is saved or deleted; reopen the recovered files by hand with `DRAWINGRECOVERY` if you need them). It is applied wherever the
-guard applies the allowlist (and by `acad-cmd.ps1` before and while attaching to AutoCAD), so `ACAD_DEV_BLOCKER_ACTIONS=0` turns it off too;
+guard applies the allowlist, and up front (a quick title scan, no report) before `run`/`query` attach to AutoCAD and before `ui`'s first step, so `ACAD_DEV_BLOCKER_ACTIONS=0` turns it off too;
 a `blockers.txt` line such as `^Drawing Recovery :: any :: report` keeps it open. Only windows of acad.exe are ever touched: a browser or
 folder with that title is not. This replaces the former `clear-blockers.ps1`.
 
