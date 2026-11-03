@@ -9,65 +9,10 @@
 #   -Tag t   write out\blockers-<t>.txt instead of blockers.txt (each caller has its own result file)
 param([switch]$Apply, [switch]$NoShot, [string]$Tag = '')
 . (Join-Path $PSScriptRoot 'common.ps1')
-. (Join-Path $PSScriptRoot 'blocker-policy.ps1')
 $resFile = Join-Path $script:Out $(if ($Tag -match '^[0-9a-fA-F]{1,32}$') { "blockers-$Tag.txt" } else { 'blockers.txt' })
 $lockFile = Join-Path $script:Out 'blockers.lock'
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Windows.Forms, System.Drawing
-if (-not ('AcadBlk' -as [type])) {
-  Add-Type -TypeDefinition @'
-using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
-public class BlkWin { public IntPtr H; public uint Pid; public IntPtr Owner; public string Cls = ""; public string Title = ""; public bool Visible, Enabled, Topmost, Cloaked; public int L, T, R, B, Z; }
-public class BlkKid { public IntPtr H; public string Cls = ""; public string Text = ""; public int Style; public bool Visible; }
-public static class AcadBlk {
-  delegate bool EP(IntPtr h, IntPtr l);
-  [DllImport("user32.dll")] static extern bool EnumWindows(EP f, IntPtr l);
-  [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr p, EP f, IntPtr l);
-  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
-  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
-  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
-  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
-  [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr h);
-  public static bool IsVisible(IntPtr h) { return IsWindowVisible(h); }
-  public static bool IsEnabled(IntPtr h) { return IsWindowEnabled(h); }
-  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
-  [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint c);
-  [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
-  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
-  [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
-  [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW", CharSet = CharSet.Unicode)] static extern IntPtr SMT(IntPtr h, uint m, IntPtr w, StringBuilder l, uint f, uint t, out IntPtr r);
-  [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW")] static extern IntPtr SMT0(IntPtr h, uint m, IntPtr w, IntPtr l, uint f, uint t, out IntPtr r);
-  [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int a, out int v, int n);
-  [StructLayout(LayoutKind.Sequential)] struct RECT { public int L, T, R, B; }
-  public static string Cls(IntPtr h) { var s = new StringBuilder(256); GetClassName(h, s, 256); return s.ToString(); }
-  public static string Caption(IntPtr h) { var s = new StringBuilder(512); GetWindowText(h, s, 512); return s.ToString(); }
-  // a control's text, also across processes; times out instead of hanging on a busy owner
-  public static string Text(IntPtr h) {
-    IntPtr r; IntPtr n = SMT0(h, 0x000E, IntPtr.Zero, IntPtr.Zero, 2, 1500, out r);
-    if (n == IntPtr.Zero || r.ToInt32() <= 0) return "";
-    var b = new StringBuilder(r.ToInt32() + 2); IntPtr r2; SMT(h, 0x000D, new IntPtr(r.ToInt32() + 1), b, 2, 1500, out r2); return b.ToString();
-  }
-  // all visible-or-not top-level windows, front to back (EnumWindows order is the z-order)
-  public static List<BlkWin> Tops() {
-    var l = new List<BlkWin>(); int z = 0;
-    EnumWindows(delegate (IntPtr h, IntPtr x) {
-      var w = new BlkWin(); w.H = h; GetWindowThreadProcessId(h, out w.Pid); w.Owner = GetWindow(h, 4); w.Cls = Cls(h); w.Title = Caption(h);
-      w.Visible = IsWindowVisible(h); w.Enabled = IsWindowEnabled(h); w.Topmost = (GetWindowLong(h, -20) & 8) != 0;
-      int c = 0; try { DwmGetWindowAttribute(h, 14, out c, 4); } catch (Exception) { } w.Cloaked = c != 0;
-      RECT r; GetWindowRect(h, out r); w.L = r.L; w.T = r.T; w.R = r.R; w.B = r.B; w.Z = z++; l.Add(w); return true; }, IntPtr.Zero);
-    return l;
-  }
-  public static List<BlkKid> Kids(IntPtr p) {
-    var l = new List<BlkKid>();
-    EnumChildWindows(p, delegate (IntPtr h, IntPtr x) {
-      var k = new BlkKid(); k.H = h; k.Cls = Cls(h); k.Style = GetWindowLong(h, -16); k.Visible = IsWindowVisible(h); k.Text = Text(h); l.Add(k); return true; }, IntPtr.Zero);
-    return l;
-  }
-  public static void Close(IntPtr h) { PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero); }        // WM_CLOSE
-  public static void Cancel(IntPtr h) { PostMessage(h, 0x0111, new IntPtr(2), IntPtr.Zero); }     // WM_COMMAND IDCANCEL
-  public static void Click(IntPtr b) { PostMessage(b, 0x00F5, IntPtr.Zero, IntPtr.Zero); }        // BM_CLICK
-}
-'@
-}
+Initialize-AcadWin   # common.ps1: the kit's one window helper, [AcadDevWin]
 
 $lines = New-Object System.Collections.Generic.List[string]
 function L([string]$s) { $lines.Add($s) }
@@ -102,8 +47,9 @@ function Get-Uia($h) {
 }
 
 function Get-Blockers {
-  $all = [AcadBlk]::Tops()
-  $frame = $all | Where-Object { $_.Pid -in $acadPids -and $_.Visible -and $_.Owner -eq [IntPtr]::Zero -and $_.Cls -like 'AfxMDIFrame*' } | Select-Object -First 1
+  $all = [AcadDevWin]::Tops()
+  $fh = [AcadDevWin]::FrameOf([uint32[]]$acadPids)
+  $frame = if ($fh -ne [IntPtr]::Zero) { $all | Where-Object { $_.H -eq $fh } | Select-Object -First 1 } else { $null }
   $out = @(); $foreign = @(); $update = @()
   foreach ($w in $all) {
     if (-not $w.Visible -or $w.Cloaked) { continue }
@@ -112,11 +58,11 @@ function Get-Blockers {
     if ($acadOwned) {
       if ($frame -and $w.H -eq $frame.H) { continue }
       if ($w.Title -match '^(Autodesk )?AutoCAD.* - \[') { continue }   # a drawing window
-      $isDlg = $w.Cls -eq '#32770' -or $w.Cls -like 'adesk_dlg*' -or ($w.Title -and ($w.Cls -like 'WindowsForms10.Window*' -or $w.Cls -like 'HwndWrapper*'))
+      $isDlg = Test-DialogWindow $w.Cls $w.Title
       if (-not $isDlg -and $w.Title -match '^\s*Drawing Recovery') { $isDlg = $true }   # whatever its window class: the built-in rule closes it
       if (-not $isDlg) { continue }
       $texts = @(); $buttons = @(); $hasInput = $false
-      $kids = if ($w.Cls -eq '#32770' -or $w.Cls -like 'adesk_dlg*') { @([AcadBlk]::Kids($w.H)) } else { @() }
+      $kids = if ($w.Cls -eq '#32770' -or $w.Cls -like 'adesk_dlg*') { @([AcadDevWin]::Kids($w.H)) } else { @() }
       if ($kids -and -not ($kids | Where-Object { $_.Cls -eq 'DirectUIHWND' })) {
         foreach ($k in $kids) {
           if (-not $k.Visible) { continue }
@@ -128,12 +74,12 @@ function Get-Blockers {
         $u = Get-Uia $w.H; $texts = $u.Texts; $buttons = $u.Buttons
       }
       $kind = Get-WindowKind $w.Cls $hasInput
-      $blocking = Get-BlockingState $kind $w.Enabled ([bool]$frame) ($frame -and [AcadBlk]::IsEnabled($frame.H)) $false $false
+      $blocking = Get-BlockingState $kind $w.Enabled ([bool]$frame) ($frame -and [AcadDevWin]::IsEnabled($frame.H)) $false $false
       $out += [pscustomobject]@{ H = $w.H; Title = $w.Title; Class = $w.Cls; Kind = $kind; Texts = $texts; Buttons = $buttons; Blocking = [bool]$blocking
         Enabled = $w.Enabled; Process = $pname; Rect = "$($w.L),$($w.T),$($w.R),$($w.B)" }
     } elseif ($pname -match $licProcs -or ($pname -eq 'msedgewebview2' -and $w.Title -match '(?i)autodesk|sign|licen')) {
       if (-not $w.Title -and $w.Cls -ne 'webview') { continue }
-      $lb = Get-BlockingState 'licensing' $w.Enabled ([bool]$frame) ($frame -and [AcadBlk]::IsEnabled($frame.H)) ($frame -and $w.Z -lt $frame.Z) ($frame -and $w.Owner -eq $frame.H)
+      $lb = Get-BlockingState 'licensing' $w.Enabled ([bool]$frame) ($frame -and [AcadDevWin]::IsEnabled($frame.H)) ($frame -and $w.Z -lt $frame.Z) ($frame -and $w.Owner -eq $frame.H)
       $out += [pscustomobject]@{ H = $w.H; Title = $w.Title; Class = $w.Cls; Kind = 'licensing'; Texts = @(); Buttons = @(); Blocking = [bool]$lb
         Enabled = $w.Enabled; Process = $pname; Rect = "$($w.L),$($w.T),$($w.R),$($w.B)" }
     } elseif ($pname -match '^(MusNotification|MusNotificationUx|MoNotificationUx)$') {
@@ -170,13 +116,13 @@ function Get-ComState {
 function Invoke-Action($w, $act) {
   # returns a short note of what was done
   if ($act.Action -eq 'close') {
-    [AcadBlk]::Close($w.H); Start-Sleep -Milliseconds 700
-    if ([AcadBlk]::IsWindow($w.H) -and $w.Class -in '#32770') { [AcadBlk]::Cancel($w.H); Start-Sleep -Milliseconds 700 }
+    [AcadDevWin]::Close($w.H); Start-Sleep -Milliseconds 700
+    if ([AcadDevWin]::Exists($w.H) -and $w.Class -in '#32770') { [AcadDevWin]::Cancel($w.H); Start-Sleep -Milliseconds 700 }
   } elseif ($act.Action -eq 'press') {
     $done = $false
-    if ($w.Class -eq '#32770' -or $w.Class -like 'adesk_dlg*' -or $w.Class -like 'WindowsForms10.*') {
-      foreach ($k in [AcadBlk]::Kids($w.H)) {
-        if (($k.Cls -eq 'Button' -or $k.Cls -like 'WindowsForms10.BUTTON*') -and $k.Visible -and (Test-ButtonMatch $k.Text $act.Button)) { [AcadBlk]::Click($k.H); $done = $true; break }
+    if ($w.Kind -in 'dialog', 'messagebox', 'winforms') {
+      foreach ($k in [AcadDevWin]::Kids($w.H)) {
+        if (($k.Cls -eq 'Button' -or $k.Cls -like 'WindowsForms10.BUTTON*') -and $k.Visible -and (Test-ButtonMatch $k.Text $act.Button)) { [AcadDevWin]::Click($k.H); $done = $true; break }
       }
     }
     if (-not $done) {
@@ -191,7 +137,7 @@ function Invoke-Action($w, $act) {
     if (-not $done) { return "could not press [$($act.Button)]" }
     Start-Sleep -Milliseconds 800
   }
-  if ([AcadBlk]::IsWindow($w.H) -and [AcadBlk]::IsVisible($w.H)) { return 'sent, but the window is still open' }
+  if ([AcadDevWin]::Exists($w.H) -and [AcadDevWin]::IsVisible($w.H)) { return 'sent, but the window is still open' }
   'done, window gone'
 }
 
@@ -225,7 +171,7 @@ try {
   } finally { if ($locked) { Exit-BlockerLock $lockFile } }
   $blocking = @($scan.Windows | Where-Object { $_.Blocking })
   $com = Get-ComState
-  $frameState = if (-not $scan.Frame) { 'main frame not found (AutoCAD still starting?)' } elseif ([AcadBlk]::IsEnabled($scan.Frame.H)) { 'main frame enabled' } else { 'main frame DISABLED: a modal window is open' }
+  $frameState = if (-not $scan.Frame) { 'main frame not found (AutoCAD still starting?)' } elseif ([AcadDevWin]::IsEnabled($scan.Frame.H)) { 'main frame enabled' } else { 'main frame DISABLED: a modal window is open' }
   $hdr = "BLOCKERS blocked=$(if ($blocking) { 1 } else { 0 }) windows=$($scan.Windows.Count) applied=$applied"
   L $hdr
   if ($Apply -and $notes.Count -and $before) {

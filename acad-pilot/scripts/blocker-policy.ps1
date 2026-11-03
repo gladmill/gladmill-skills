@@ -157,12 +157,24 @@ function Resolve-BlockerAction {
 
 function Get-WindowKind {
   # Kind from the window class. messagebox = a #32770 dialog without input controls (edit / combo / list).
+  # winforms = a top-level WinForms form (class WindowsForms10.Window.*) on purpose: other top-level WindowsForms10.* classes
+  # (tooltips, drop-down lists) are not windows anyone has to deal with, so they stay 'window'.
   param([string]$Class, [bool]$HasInput = $false)
   if ($Class -eq '#32770') { if ($HasInput) { return 'dialog' } else { return 'messagebox' } }
   if ($Class -like 'adesk_dlg*') { return 'dialog' }
-  if ($Class -like 'WindowsForms10.*') { return 'winforms' }
+  if ($Class -like 'WindowsForms10.Window*') { return 'winforms' }
   if ($Class -like 'HwndWrapper*') { return 'wpf' }
   'window'
+}
+
+function Test-DialogWindow {
+  # Is this top-level window a dialog-like candidate for the guard and the ui driver? Win32 / MFC / task dialogs (#32770) and DCL
+  # dialogs (adesk_dlg*) always; WinForms and WPF windows only when they have a title (an untitled one is a helper window).
+  # Never the frame, palettes (Afx:...), menus, tool tips or drop-down lists: their kind is 'window'.
+  param([string]$Class, [string]$Title = '')
+  $k = Get-WindowKind $Class
+  if ($k -in 'dialog', 'messagebox') { return $true }
+  return (($k -in 'winforms', 'wpf') -and "$Title".Length -gt 0)
 }
 
 function Test-ComRejected {

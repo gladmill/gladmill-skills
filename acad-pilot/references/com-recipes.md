@@ -36,7 +36,7 @@ $doc.Layouts | % { $_.Name }
 
 ## System variables (typed on write)
 ```powershell
-$doc.GetVariable('FILEDIA'); $doc.GetVariable('CMDECHO')
+$doc.GetVariable('FILEDIA'); $doc.GetVariable('CMDECHO'); $doc.GetVariable('SECURELOAD'); $doc.GetVariable('TRUSTEDPATHS')
 $doc.SetVariable('FILEDIA', [int16]0)     # always pass the right type
 ```
 

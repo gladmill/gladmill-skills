@@ -49,7 +49,6 @@ public class KitCtl {
 
 public static class KitUi {
   public delegate bool EnumProc(IntPtr h, IntPtr l);
-  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
   [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr p, EnumProc f, IntPtr l);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
@@ -123,30 +122,10 @@ public static class KitUi {
   }
   public static bool SetText(IntPtr h, string s) { IntPtr r; return SMTs(h, WM_SETTEXT, IntPtr.Zero, s, SMTO_ABORTIFHUNG, 3000, out r) != IntPtr.Zero; }
 
-  // Top-level windows of a process, front to back (EnumWindows order is the z-order).
-  public static List<IntPtr> Tops(uint pid) {
-    var l = new List<IntPtr>();
-    EnumWindows(delegate (IntPtr h, IntPtr x) { if (Pid(h) == pid) l.Add(h); return true; }, IntPtr.Zero);
-    return l;
-  }
   public static List<IntPtr> Kids(IntPtr w) {
     var l = new List<IntPtr>();
     EnumChildWindows(w, delegate (IntPtr h, IntPtr x) { l.Add(h); return true; }, IntPtr.Zero);
     return l;
-  }
-  // AutoCAD's main frame: the visible, unowned top-level window of MFC's frame class (AfxMDIFrame140u on 2024-2026).
-  public static IntPtr Frame(uint pid) {
-    foreach (var h in Tops(pid))
-      if (IsWindowVisible(h) && GetWindow(h, 4) == IntPtr.Zero && Cls(h).StartsWith("AfxMDIFrame")) return h;
-    return IntPtr.Zero;
-  }
-  // Dialog-like top-level windows: Win32 / MFC / task dialogs (#32770), DCL dialogs (adesk_dlg*), titled WinForms and WPF windows.
-  // Not the frame, palettes (Afx:...), menus, tool tips, drop-down lists or the untitled WPF helper windows.
-  public static bool IsDialog(IntPtr h) {
-    string c = Cls(h);
-    if (c == "#32770" || c.StartsWith("adesk_dlg")) return true;
-    if (Caption(h).Length == 0) return false;
-    return c.StartsWith("WindowsForms10.Window") || c.StartsWith("HwndWrapper");
   }
   public static RECT Rect(IntPtr h) { RECT r; GetWindowRect(h, out r); return r; }
   // True when no part of the window is on any monitor (a position remembered from a monitor that is gone).
@@ -433,6 +412,7 @@ public static class KitUi {
   }
 }
 '@
+Initialize-AcadWin   # common.ps1: EnumWindows and AutoCAD's main frame come from the shared [AcadDevWin]
 if (-not ('KitUi' -as [type])) {
   try { Add-Type -ReferencedAssemblies UIAutomationClient, UIAutomationTypes, WindowsBase, System.Windows.Forms, System.Drawing -TypeDefinition $helper -ErrorAction Stop }
   catch { W ("FAIL 0: the helper did not compile: " + (($Error | Select-Object -First 1 | ForEach-Object { "$_" -replace "\s+", " " }))); Finish 2 }
@@ -452,7 +432,7 @@ function Fail($n, $step, $why) {
 $rec = @(Close-RecoveryWindows); if ($rec) { W "guard: closed $($rec -join ', ') (built-in Drawing Recovery rule)"; Start-Sleep -Seconds 1 }
 $proc = $null; $frame = [IntPtr]::Zero
 foreach ($p in @(Get-Process acad -EA SilentlyContinue | Sort-Object StartTime -Descending)) {
-  $f = [KitUi]::Frame([uint32]$p.Id); if ($f -ne [IntPtr]::Zero) { $proc = $p; $frame = $f; break }
+  $f = [AcadDevWin]::FrameOf([uint32[]]@([uint32]$p.Id)); if ($f -ne [IntPtr]::Zero) { $proc = $p; $frame = $f; break }
 }
 if (-not $proc) { W 'FAIL 0: AutoCAD is not running (no acad.exe with a main window)'; Finish 1 }
 $apid = [uint32]$proc.Id
@@ -465,7 +445,7 @@ function Dialog-Info($h) {
     Rect = "$($r.L),$($r.T),$($r.R),$($r.B)" }
 }
 # AutoCAD's dialogs, front to back, visible ones only (a hidden dialog can't be answered by a person either)
-function Dialogs { @([KitUi]::Tops($apid) | Where-Object { [KitUi]::IsWindowVisible($_) -and [KitUi]::IsDialog($_) } | ForEach-Object { Dialog-Info $_ }) }
+function Dialogs { @([AcadDevWin]::HandlesOf($apid) | Where-Object { [KitUi]::IsWindowVisible($_) -and (Test-DialogWindow ([KitUi]::Cls($_)) ([KitUi]::Caption($_))) } | ForEach-Object { Dialog-Info $_ }) }
 function List-Dialogs {
   $d = Dialogs
   if (-not $d) { return @("(none; AutoCAD's main window is " + $(if ([KitUi]::IsWindowEnabled($frame)) { 'enabled' } else { 'disabled: something modal is open' }) + ')') }
@@ -624,7 +604,7 @@ function Find-Items-Popups($want) {
     $wins = $fr.FindAll([System.Windows.Automation.TreeScope]::Children, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)))
     foreach ($w in $wins) { $found += Find-Items $w $want }
   }
-  foreach ($h in [KitUi]::Tops($apid)) {
+  foreach ($h in [AcadDevWin]::HandlesOf($apid)) {
     if ($h -eq $frame -or -not [KitUi]::IsWindowVisible($h) -or [KitUi]::Cls($h) -notlike 'HwndWrapper*' -or [KitUi]::GetWindow($h, 4) -ne $frame) { continue }
     $e = [KitUi]::Elem($h); if ($e) { $found += Find-Items $e $want }
   }
@@ -735,7 +715,7 @@ function CommandLine-Rect {
     if ($script:cmdLine -eq [IntPtr]::Zero -and $script:cmdLineLooked) { return $null }   # looked once this run and found none (hidden with Ctrl+9)
     $script:cmdLine = [IntPtr]::Zero; $script:cmdLineLooked = $true
     # floating: an untitled top-level WPF window owned by the main window; docked: a child of it. Small ones only (not the ribbon's)
-    foreach ($h in @([KitUi]::Tops($apid) | Where-Object { [KitUi]::GetWindow($_, 4) -eq $frame }) + @([KitUi]::Kids($frame))) {
+    foreach ($h in @([AcadDevWin]::HandlesOf($apid) | Where-Object { [KitUi]::GetWindow($_, 4) -eq $frame }) + @([KitUi]::Kids($frame))) {
       if (-not [KitUi]::IsWindowVisible($h) -or [KitUi]::Cls($h) -notlike 'HwndWrapper*' -or [KitUi]::Caption($h)) { continue }
       $wr = [KitUi]::Rect($h); if ($wr.B - $wr.T -gt 300) { continue }
       $e = [KitUi]::Elem($h)
