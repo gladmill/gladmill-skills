@@ -25,6 +25,8 @@ This is the free, open-source part. It is MIT licensed (see LICENSE).
   remote call as `powershell -EncodedCommand`, so it does not depend on the shell.
 
 ## Install
+Download the latest zip, watch the two demo recordings, or sign up for release news at **https://gladmill.com/pilot/**. Then:
+
 1. Copy the `acad-pilot` folder to `~/.claude/skills/` (all projects) or to `<your project>/.claude/skills/` (one project).
    On Windows `~` is `C:\Users\<you>`.
 2. Start Claude Code. Ask: "Use the acad-pilot skill to start AutoCAD and tell me when it is ready."
