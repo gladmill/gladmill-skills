@@ -442,10 +442,14 @@ function Fail($n, $step, $why) {
   W ("FAIL {0} {1}: {2}" -f $n, $step, $why)
   try { W '--- dialogs now ---'; foreach ($l in (List-Dialogs)) { W "  $l" } } catch { W "  (could not list them: $($_.Exception.Message))" }
   try { Save-Screenshot (Join-Path $out 'ui-fail.png'); W 'screenshot: out\ui-fail.png' } catch { }
+  # what is in AutoCAD's way (report only: ui never closes a window on its own account)
+  try { $g = Get-BlockerReport -NoShot -TimeoutSec 40; if ($g.Blocked) { foreach ($l in ($g.Text -split "`r?`n")) { W $l } } } catch { }
   W ("FAIL at step {0} of {1}" -f $n, $script:total)
   Finish 1
 }
 
+# before the first step: AutoCAD's Drawing Recovery window (built-in rule only; ui never applies the allowlist) would hold every step up
+$rec = @(Close-RecoveryWindows); if ($rec) { W "guard: closed $($rec -join ', ') (built-in Drawing Recovery rule)"; Start-Sleep -Seconds 1 }
 $proc = $null; $frame = [IntPtr]::Zero
 foreach ($p in @(Get-Process acad -EA SilentlyContinue | Sort-Object StartTime -Descending)) {
   $f = [KitUi]::Frame([uint32]$p.Id); if ($f -ne [IntPtr]::Zero) { $proc = $p; $frame = $f; break }

@@ -10,9 +10,20 @@
 #                               session and wait until it is ready; --trust (or ACAD_DEV_TRUSTED) adds those folders to TRUSTEDPATHS
 #                               (saved in the AutoCAD profile); --product, --profile, --exe (or ACAD_DEV_PRODUCT, ACAD_DEV_PROFILE,
 #                               ACAD_DEV_EXE here) become /product, /p and the acad.exe used; unset, the box's own variables apply
-#   wait [timeoutSec]           wait until AutoCAD answers over COM and is quiescent
+#   blockers [--apply] [--no-shot]   WHAT IS BLOCKING AUTOCAD? Run it first when anything stalls. Lists AutoCAD's dialogs, message
+#                               boxes and other windows in its way (title, class, kind, texts, buttons, modal or not), licensing
+#                               helper windows, the command line state, and takes a screenshot (out/blockers.png). Exit 0 nothing
+#                               blocks, 6 "BLOCKED BY: ...". --apply also closes / presses a button in windows the allowlist
+#                               (blockers.txt in the work folder; see scripts/README.md) names. Security prompts, licence / sign-in /
+#                               trial screens and "save changes?" prompts are never touched. run, wait and ui call it themselves
+#                               when they stall or time out (exit 6); ACAD_DEV_BLOCKER_ACTIONS=0 (on the box) stops them applying the allowlist
+#   wait [timeoutSec]           wait until AutoCAD answers over COM and is quiescent (exit 6: a window blocks it, report printed)
 #   stop [--discard|--force]    quit AutoCAD (refuses if a drawing has unsaved changes; --discard throws them away, --force kills a hung AutoCAD)
-#   run "<cmds>" [--query f.ps1] [--wait n] [--timeout s]   send commands ('|' separates, \n = Enter), optional COM query; prints the log tail
+#   run "<cmds>" [--query f.ps1] [--wait n] [--timeout s] [--stall s] [--esc]   send commands ('|' separates, \n = Enter),
+#                               optional COM query; prints the log tail. Exit 4 (STUCK): a command has run over --stall s (default
+#                               30, 0 = off) with AutoCAD busy (a prompt/dialog, or a long command with progress); later commands
+#                               are not sent. --esc also presses Esc: exit 4 when that freed AutoCAD, 5 when it did not. Exit 6
+#                               (BLOCKED BY: ...): a window is in AutoCAD's way (stuck or timed out); no Esc is pressed then
 #   query <f.ps1>               run a COM query only (no commands)
 #   shot [local.png]            screenshot of the desktop, copied back (default ./acad-shot.png)
 #   screen [local.png]          the screenshot taken by the last `run` (out/screen.png)
@@ -21,14 +32,15 @@
 #   cancel "<window title>" [--close]   post IDCANCEL (or WM_CLOSE) to a window by exact title; prints visible windows
 #   ui [--step-timeout s] [--timeout s] [--file steps.txt] "<step>" ...   drive AutoCAD's UI step by step: ribbon clicks,
 #                               commands that open dialogs, DCL dialogs, message boxes (steps: scripts/README.md). Exit 0 all
-#                               passed, 1 a step failed (fetch out/ui-fail.png for the screen), 2 bad input or setup error,
-#                               3 replaced by a newer ui run, 4 timeout
+#                               passed, 1 a step failed (fetch out/ui-fail.png for the screen; a BLOCKED BY report follows when a window is in the way),
+#                               2 bad input or setup error, 3 replaced by a newer ui run, 4 timeout, 6 timeout with a window in the way
 #   fetch <remote path rel. to home> [local]   copy a file back from the box
 set -uo pipefail
 HOST="${ACAD_DEV_SSH_HOST:-}"
 [ -n "$HOST" ] || { echo "set ACAD_DEV_SSH_HOST (ssh host of the Windows machine)" >&2; exit 2; }
 here="$(cd "$(dirname "$0")" && pwd)"
-SSHO=(-o BatchMode=yes -o ConnectTimeout=10)
+SSHO=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)   # a dead connection ends in about a minute
+scp() { command scp -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$@"; }   # same limits for copies
 # Every remote call is `powershell -EncodedCommand <base64 of UTF-16LE>`, so it works whatever the SSH default shell is
 # (Windows OpenSSH defaults to cmd.exe; PowerShell and others work too) and needs no quoting.
 rps() {
@@ -87,24 +99,42 @@ case "$cmd" in
       args+=("-$k" "'$v'")
     done
     psa start-acad.ps1 "${args[@]}" ;;
-  wait) psa wait-acad.ps1 -TimeoutSec "${1:-240}" ;;
+  wait) [[ "${1:-240}" =~ ^[0-9]+$ ]] || { echo "wait: timeoutSec takes whole seconds" >&2; exit 2; }
+        psa wait-acad.ps1 -TimeoutSec "${1:-240}" ;;   # 0 = the default 240; exit 6 = BLOCKED BY a window (report printed)
+  blockers)
+    ba=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --apply) ba+=(-Apply) ;;
+        --no-shot) ba+=(-NoShot) ;;
+        *) echo "blockers: unknown argument '$1' (expected --apply, --no-shot)" >&2; exit 2 ;;
+      esac; shift
+    done
+    psa blockers.ps1 ${ba[@]+"${ba[@]}"}; rc=$?
+    [ "$rc" = 6 ] && echo "(screenshot: acad-dev.sh fetch out/blockers.png ./blockers.png)"
+    exit "$rc" ;;
   stop) case "${1:-}" in --force) psa stop-acad.ps1 -Force ;; --discard) psa stop-acad.ps1 -DiscardChanges ;; *) psa stop-acad.ps1 ;; esac ;;
   run|query)
-    cmds=""; q=""; wait=3; tmo=
+    cmds=""; q=""; wait=3; tmo=; stall=; esc=
     if [ "$cmd" = "run" ]; then cmds="${1:-}"; shift; fi
     while [ $# -gt 0 ]; do
       case "$1" in
         --query) q="$2"; shift ;;
         --wait) wait="$2"; shift ;;
         --timeout) tmo="$2"; shift ;;
+        --stall) stall="$2"; shift ;;
+        --esc) esc=1 ;;
         *) [ "$cmd" = "query" ] && q="$1" ;;
       esac; shift
     done
     tmp="$(mktemp)"; printf '%s' "$cmds" > "$tmp"
+    for nv in "$wait" "$tmo" "$stall"; do [[ "${nv:-0}" =~ ^[0-9]+$ ]] || { echo "run: --wait, --timeout and --stall take whole seconds" >&2; rm -f "$tmp"; exit 2; }; done
     scp -q "$tmp" "$HOST:$H/cmds.txt" || { rm -f "$tmp"; echo "scp failed" >&2; exit 2; }; rm -f "$tmp"
     extra=""
     if [ -n "$q" ]; then scp -q "$q" "$HOST:$H/query.ps1" || { echo "scp failed" >&2; exit 2; }; extra="-HasQuery"; fi
     [ -n "$tmo" ] && extra="$extra -TimeoutSec $tmo"
+    [ -n "$stall" ] && extra="$extra -StallSec $stall"
+    [ -n "$esc" ] && extra="$extra -Esc"
     psa run-in-session.ps1 -Staged -WaitSec "$wait" $extra ;;   # exits 1 with a TIMEOUT line if the worker never finished
   shot)
     out="${1:-./acad-shot.png}"; fresh out/shot.png; rm -f "$out"

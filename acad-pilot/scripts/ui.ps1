@@ -6,7 +6,8 @@
 #   -TimeoutSec n       give up on the whole run after n s (default: the steps' own waits + 60, at least 120)
 #   -Staged             use the <home>\ui.txt already there (the Mac wrapper copies it with scp)
 # Steps: see ui-run.ps1. Exit 0 when every step passed, 1 when one failed (the result says which and why, lists the open dialogs
-# and leaves out\ui-fail.png), 2 for bad input or a setup error (no step ran), 3 when a newer ui run replaced this one, 4 on a timeout.
+# and leaves out\ui-fail.png), 2 for bad input or a setup error (no step ran), 3 when a newer ui run replaced this one, 4 on a timeout,
+# 6 on a timeout with a window in AutoCAD's way (the output ends with the "BLOCKED BY: ..." report; a failed step lists the same).
 param([string[]]$Steps = @(), [string]$File = '', [int]$StepTimeoutSec = 20, [int]$TimeoutSec = 0, [switch]$Staged)
 . (Join-Path $PSScriptRoot 'common.ps1')
 $uiFile = Join-Path $script:Home_ 'ui.txt'
@@ -55,4 +56,7 @@ if (-not (Mine)) { 'SUPERSEDED: a newer ui run started, so this one stopped; its
 Set-Content $runFile "timeout $RunId"   # a worker still running sends and writes nothing more
 Get-Content $res -Encoding UTF8 -EA SilentlyContinue
 "TIMEOUT: the ui run did not finish within ${TimeoutSec}s (a step may be waiting on AutoCAD); shot shows the screen"
+$g = Get-BlockerReport   # report only: ui steps wait for windows on purpose, so nothing is closed here
+$g.Text
+if ($g.Blocked) { exit 6 }
 exit 4

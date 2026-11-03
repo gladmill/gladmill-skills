@@ -61,16 +61,29 @@ Every example below shows local (PowerShell, from the `scripts` folder) then rem
    Recipes: [references/com-recipes.md](references/com-recipes.md). Queries are read-only unless you mean otherwise.
 5. **Screenshot**: `.\run-task.ps1 shot.ps1` then `<home>\out\shot.png` | `acad-dev.sh shot ./shot.png`. Look at it (Read tool)
    when the log does not explain the state. `run` also leaves `out\screen.png` (`acad-dev.sh screen`).
-6. **Stuck? (COM hangs, `RPC_E_CALL_REJECTED`, `TIMEOUT`)** AutoCAD is at a prompt or a modal dialog. `run`/`query` already
+6. **Stuck? (COM hangs, `RPC_E_CALL_REJECTED`, `TIMEOUT`, anything that does not come back)** **First thing, before a screenshot,
+   Esc or a retry: `.\blockers.ps1` | `acad-dev.sh blockers`.** It names what is in AutoCAD's way: the dialog, message box, add-in
+   window or licence / sign-in screen (title, class, texts, buttons, modal or not), AutoCAD's command line state (`CMDACTIVE`,
+   `CMDNAMES`) and a screenshot (`out\blockers.png`). `run`, `wait` and `ui` print the same report themselves, as `BLOCKED BY: ...`
+   with exit 6, when they stall, time out or are still rejected after the COM retry window, and every wait is finite. Read the report,
+   then act: a window the user allowlisted (`blockers.txt`, see `scripts/README.md`) is dismissed by the guard on its own (or
+   `blockers --apply`), as is AutoCAD's Drawing Recovery window (built in); any other window is yours to report to the user. **You never answer** security prompts (unsigned /
+   untrusted file), licence, sign-in or trial screens, or "save changes?" prompts: the guard won't either, whatever the allowlist
+   says. Show the user the `BLOCKED BY` text and ask. Don't add rules to `blockers.txt` on your own to get past such a window; the
+   user decides what is harmless. If `BLOCKED BY` is empty (exit 1 / 4), continue with the steps below. `run`/`query` already
    retry a call AutoCAD rejects as merely busy (up to `ACAD_DEV_COM_RETRY_SEC`, default 30 s), so a `RPC_E_CALL_REJECTED` from
    them after that wait usually means a dialog, unless the result says `com retry off`. Rejections from `wait`/`start` are
-   normal while AutoCAD starts. Screenshot before pressing Esc: Esc cancels a long command that is only busy.
+   normal while AutoCAD starts.
+   Remote `run` notices this itself: when one command has run over 30 s (`--stall s`, 0 = off) and AutoCAD answers COM as busy,
+   the run stops there (later commands are not sent), prints `STUCK: command N (...)` and exits 4, leaving AutoCAD as it is.
+   Busy can also be a long command with a progress meter, so look (screenshot) before pressing Esc. `--esc` presses it for
+   you: exit 4 if AutoCAD came free, 5 if not (a dialog: step 3). A computation that blocks AutoCAD doesn't answer COM at all
+   and is not flagged.
    1. Screenshot (no COM needed). 2. `run-task.ps1 esc.ps1` | `acad-dev.sh esc` (leaves a prompt; exit 3 / `foreground: False` means Esc may not have arrived: query or screenshot again).
    3. A dialog: `run-task.ps1 wincancel.ps1 -Title "<exact title>"` | `acad-dev.sh cancel "<title>"` (lists visible windows too).
-   WPF dialogs ignore IDCANCEL: `acad-dev.sh cancel "<title>" --close` (WM_CLOSE). Before attaching, `run`/`query` close AutoCAD's
-   Drawing Recovery windows (`clear-blockers.ps1`) and retry a failed attach; if it still fails, the error says what it found (a
-   Windows Update "restart to install" prompt can't be dismissed from here: dismiss it by hand, or run `harden-automation-vm.ps1`
-   once on a VM you own). 4. Still stuck: `stop-acad.ps1 -Force`
+   WPF dialogs ignore IDCANCEL: `acad-dev.sh cancel "<title>" --close` (WM_CLOSE). AutoCAD's Drawing Recovery window (after a crash) is closed by the
+   guard on its own, and a Windows Update "restart to install" prompt is reported but can't be dismissed from here: dismiss it by hand, or
+   run `harden-automation-vm.ps1` once on a VM you own. 4. Still stuck: `stop-acad.ps1 -Force`
    | `acad-dev.sh stop --force` (kills AutoCAD; unsaved work is lost, so ask the user first if they have real drawings open), then start again. Never leave a command half-answered.
 7. **Stop**: `.\stop-acad.ps1` | `acad-dev.sh stop`. It quits only if no drawing has unsaved changes and prints
    `REFUSED: unsaved changes in: ...` otherwise. For test drawings you created this session, and only then, use
@@ -81,7 +94,7 @@ Every example below shows local (PowerShell, from the `scripts` folder) then rem
 
 ## Ribbon, dialogs and alerts: the `ui` driver
 
-`run` types commands and waits for each one, so a command that opens a dialog or alert stalls it until it times out. For anything with
+`run` types commands and waits for each one, so a command that opens a dialog or alert stops it (`STUCK`). For anything with
 UI, use `ui`: one step per line, run in order, each waiting (up to `--step-timeout`, default 20 s) for what it needs and
 printing `ok`/`FAIL` with what it saw. `.\ui.ps1 -Steps 'step','step'` (or `-File steps.txt`) | `acad-dev.sh ui 'step' 'step' ...`
 (or `--file steps.txt`). Steps:

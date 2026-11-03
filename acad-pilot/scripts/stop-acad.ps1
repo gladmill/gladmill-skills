@@ -24,7 +24,7 @@ if ($DiscardChanges) {
 Set-Content (Join-Path $script:Home_ 'cmds.txt') '' -NoNewline
 Copy-Item $q (Join-Path $script:Home_ 'query.ps1') -Force
 $out = & (Join-Path $PSScriptRoot 'run-in-session.ps1') -Staged -HasQuery -WaitSec 0 -NoShot | Out-String
-$line = ($out -split "`r?`n" | Where-Object { $_ -match 'quit sent|REFUSED|ERROR|TIMEOUT' } | Select-Object -First 1)
+$line = ($out -split "`r?`n" | Where-Object { $_ -match 'quit sent|REFUSED|ERROR|TIMEOUT|BLOCKED BY' } | Select-Object -First 1)
 if ($line) { $line.Trim() }
 if ($line -notmatch 'quit sent') {
   'acad left running. Save or close the drawings, re-run with -DiscardChanges (test drawings, user agreed), or -Force if it is hung.'
