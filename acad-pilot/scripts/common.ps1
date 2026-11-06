@@ -56,6 +56,7 @@ function Invoke-InSession {
     while (-not $p.HasExited) {
       if ((Get-Date) -gt $deadline) { $timedOut = $true; break }
       if ($OnPoll -and (& $OnPoll)) { $stoppedWaiting = $true; break }
+      Update-AcadStatusHeartbeat   # a long wait keeps this script's status line fresh (no-op unless the script wrote one)
       Start-Sleep -Milliseconds 300
     }
     if ($timedOut -or $stoppedWaiting) {
@@ -89,6 +90,7 @@ function Invoke-InSession {
       if ($t -and $i -and $t.State -ne 'Running' -and $i.LastTaskResult -ne 267011 -and $i.LastRunTime.Year -gt 2000) { break }
       if ((Get-Date) -gt $deadline) { 'TIMEOUT waiting for the task'; break }
       if ($OnPoll -and (& $OnPoll)) { break }
+      Update-AcadStatusHeartbeat
       Start-Sleep -Milliseconds 500
     }
   } finally {
@@ -247,6 +249,207 @@ public static class AcadDevWin {
 }
 
 . (Join-Path $PSScriptRoot 'blocker-policy.ps1')   # Test-ComRejected and the allowlist / denylist functions
+
+# --- Status board writer: this kit's line in the shared AutoCAD status folder (references/status-board.md), one file per process,
+# `acad-pilot-<pid>.json`. A script that drives AutoCAD for a while (run-in-session, ui, wait-acad, start-acad, stop-acad) says so:
+# Start-AcadStatus, then Write-AcadStatus for each new state, Stop-AcadStatus at the end (state `stopped`, the result in the summary and in
+# detail.result), Set-AcadStatusError in a catch the script already has (the scripts add no try/catch/finally of their own for the status: it would change how they react to errors); the poll loops refresh it. The functions of the status board
+# itself (status-board.ps1: file format, parse, merge) are NOT loaded by common.ps1: a script that writes or reads the status dot-sources
+# status-board.ps1 right after common.ps1 (a dot-source inside a function would not reach the caller's scope), so the workers do not carry it.
+# Every loop or wait of such a script that can last longer than about 10 s must call Update-AcadStatusHeartbeat (see AGENTS.md).
+$script:AcadStatusCur = $null   # the last status this script wrote (state, summary, detail, since): what the heartbeat repeats
+$script:AcadStatusAt = $null
+$script:AcadStatusLogged = $false
+$script:AcadStatusPidStart = $null   # start time (UTC) of this PowerShell process, looked up once
+$script:AcadStatusFails = 0   # writes that failed in a row (the heartbeat backs off after several)
+$script:AcadStatusOk = $true   # did the last Write-AcadStatus work (true also when status is off or there is no folder)?
+$script:AcadStatusNested = $false   # a script called by another one in the same process (start-acad -> wait-acad): the caller writes the final line
+
+function Get-AcadStatusDir {
+  # $env:ACAD_STATUS_DIR if set, else %ProgramData%\Gladmill\acad-status; $null when neither is known (ProgramData is unset off Windows).
+  if ($env:ACAD_STATUS_DIR) { return $env:ACAD_STATUS_DIR }
+  if ($env:ProgramData) { return (Join-Path (Join-Path $env:ProgramData 'Gladmill') 'acad-status') }
+  return $null
+}
+
+function Read-AcadStatusFile {
+  # The bytes of a status file. Opened with FileShare ReadWrite + Delete and read to the end, never with Get-Content or ReadAllText, which
+  # would block a writer replacing the file at the same moment (on Windows a replace needs the delete share). $null when unreadable.
+  param([string]$Path)
+  try {
+    $fs = [IO.File]::Open($Path, 'Open', 'Read', 'ReadWrite, Delete')
+    try { $ms = New-Object IO.MemoryStream; $fs.CopyTo($ms); return , $ms.ToArray() } finally { $fs.Dispose() }
+  } catch { return $null }
+}
+
+function Move-AcadStatusFile {
+  # Puts the finished tmp file over the status file (atomic replace; a plain move when there is no file yet). Throws when it cannot.
+  param([string]$From, [string]$To)
+  if ([IO.File]::Exists($To)) {
+    try { [IO.File]::Replace($From, $To, [NullString]::Value) } catch { if ([IO.File]::Exists($To)) { throw }; [IO.File]::Move($From, $To) }   # (Move: it vanished meanwhile)
+  } else { [IO.File]::Move($From, $To) }
+}
+
+function Test-AcadStatusPidAlive {
+  # Is process $ProcessId running, and (when the status file gave its start time) the same process? Windows reuses process ids: a live
+  # process that started more than 2 s from $PidStart is another one. A start time that cannot be read counts as the same process.
+  param([int]$ProcessId, $PidStart = $null)
+  try {
+    $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $p) { return $false }
+    if ($null -eq $PidStart) { return $true }
+    $actual = $null; try { $actual = $p.StartTime.ToUniversalTime() } catch { }
+    return (Test-AcadStatusPidStart $PidStart $actual)
+  } catch { return $false }
+}
+
+function Test-AcadStatusDetail {
+  # Command, step and error text may go into the status file unless ACAD_STATUS_DETAIL=0.
+  return ("$env:ACAD_STATUS_DETAIL".Trim() -ne '0')
+}
+
+function Get-AcadStatusText {
+  # Text for a status summary or `detail.cmds` that may carry what a person typed (commands, ui steps, error text): the first 120
+  # characters, one line; '' when ACAD_STATUS_DETAIL=0 (the status file is readable by every local user).
+  param($Text, [int]$Max = 120)
+  if (-not (Test-AcadStatusDetail)) { return '' }
+  return (Limit-AcadStatusText $Text $Max)
+}
+
+function Write-AcadStatus {
+  # Writes this script's status line: <status folder>\acad-pilot-<pid>.json, UTF-8 without BOM, atomic (a tmp file in the same folder, then
+  # replace). source acad-pilot, ttlSec 15, owner from ACAD_STATUS_OWNER. Never throws and prints nothing: a failure is noted once in
+  # <home>\out\status-error.txt and the real work goes on. Off when ACAD_STATUS=0. Works in Windows PowerShell 5.1 and PowerShell 7.
+  #   -Detail   the entry's `detail` object; left out, the one of the previous write (Start-AcadStatus) stays
+  # Each process writes only its own file, acad-pilot-<pid>.json (scripts run one after the other in one console share it). The summary
+  # is cut to 120 characters (the folder is readable by every local user).
+  param([Parameter(Mandatory = $true, Position = 0)][string]$State, [Parameter(Position = 1)][string]$Summary = '', [hashtable]$Detail = $null)
+  $tmp = $null
+  try {
+    $prev = $script:AcadStatusCur
+    $since = if ($prev -and $prev.State -ceq $State -and $prev.Since) { $prev.Since } else { [DateTime]::UtcNow }
+    if (-not $PSBoundParameters.ContainsKey('Detail') -and $prev) { $Detail = $prev.Detail }
+    $script:AcadStatusCur = @{ State = $State; Summary = $Summary; Detail = $Detail; Since = $since }
+    $script:AcadStatusAt = Get-Date
+    $script:AcadStatusOk = $true
+    if ("$env:ACAD_STATUS".Trim() -eq '0') { return }
+    $dir = Get-AcadStatusDir
+    if (-not $dir) { return }
+    if (-not (Get-Command New-AcadStatusDocument -ErrorAction SilentlyContinue)) { throw 'status-board.ps1 is not loaded (dot-source it after common.ps1)' }
+    $file = Join-Path $dir "acad-pilot-$PID.json"
+    if ($null -eq $script:AcadStatusPidStart) { try { $script:AcadStatusPidStart = (Get-Process -Id $PID -ErrorAction Stop).StartTime.ToUniversalTime() } catch { } }
+    $doc = New-AcadStatusDocument -Source 'acad-pilot' -Writer 'AutoCAD Dev Kit' -ProcessId $PID -PidStart $script:AcadStatusPidStart -Now ([DateTime]::UtcNow) -TtlSec 15 `
+      -State $State -Summary (Limit-AcadStatusText $Summary 120) -Owner "$env:ACAD_STATUS_OWNER" -Since $since -Detail $Detail
+    $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($doc | ConvertTo-Json -Depth 6 -Compress))
+    [void][IO.Directory]::CreateDirectory($dir)
+    $tmp = "$file.tmp-$PID"
+    [IO.File]::WriteAllBytes($tmp, $bytes)
+    # A reader that holds the file for a moment (an old one without the delete share, antivirus) can make the replace fail: try again
+    # twice at once, 50 ms apart (so a final state still lands), unless writes have failed several times in a row. Otherwise the next
+    # refresh tries again (Update-AcadStatusHeartbeat), after a longer pause the more writes failed in a row.
+    $tries = if ($script:AcadStatusFails -ge 3) { 1 } else { 3 }
+    for ($t = 1; $t -le $tries; $t++) {
+      try { Move-AcadStatusFile $tmp $file; break } catch { if ($t -ge $tries) { throw }; Start-Sleep -Milliseconds 50 }
+    }
+    $script:AcadStatusFails = 0
+  } catch {
+    $script:AcadStatusFails++
+    $script:AcadStatusOk = $false
+    if (-not $script:AcadStatusLogged) {
+      $script:AcadStatusLogged = $true
+      try { "$([DateTime]::UtcNow.ToString('o')) status write failed (the work itself goes on): $($_.Exception.Message)" | Set-Content (Join-Path $script:Out 'status-error.txt') } catch { }
+    }
+  } finally {
+    if ($tmp) { try { if ([IO.File]::Exists($tmp)) { [IO.File]::Delete($tmp) } } catch { } }
+  }
+}
+
+function Remove-AcadStatusLeftovers {
+  # Housekeeping when a kit script starts: removes this kit's files that nobody refreshes any more: acad-pilot-<pid>.json whose process is
+  # gone and that was last written over 10 minutes ago (Test-AcadStatusRemovable), the old single acad-pilot.json of earlier versions once it
+  # is stale, and the half-written acad-pilot-<pid>.json.tmp-<pid> of a writer that died, once 10 minutes old. Other tools' files are never
+  # touched. Silent: every cmdlet runs with -ErrorAction Stop inside a catch, nothing prints, and a failure changes neither $? nor an exit code.
+  try {
+    if ("$env:ACAD_STATUS".Trim() -eq '0') { return }
+    $dir = Get-AcadStatusDir
+    if (-not $dir -or -not [IO.Directory]::Exists($dir)) { return }
+    foreach ($f in [IO.Directory]::GetFiles($dir, 'acad-pilot*')) {
+      try {
+        $name = [IO.Path]::GetFileName($f)
+        if ($name -cmatch '^acad-pilot(-\d+)?\.json\.tmp-\d+$') {   # a writer's tmp file: over 10 minutes old = left behind
+          if (((Get-Date) - (Get-Item -LiteralPath $f -ErrorAction Stop).LastWriteTime).TotalMinutes -gt 10) { Remove-Item -LiteralPath $f -Force -ErrorAction Stop }
+          continue
+        }
+        if ($name -cne 'acad-pilot.json' -and $name -cnotmatch '^acad-pilot-\d+\.json$') { continue }
+        if ($name -ceq "acad-pilot-$PID.json") { continue }
+        $bytes = Read-AcadStatusFile $f
+        if ($null -eq $bytes) { continue }
+        $r = ConvertFrom-AcadStatusBytes -Bytes $bytes -FileName $name
+        if (-not $r.Ok) {   # damaged: left alone for 10 minutes (it may be mid-write), then removed
+          if (((Get-Date) - (Get-Item -LiteralPath $f -ErrorAction Stop).LastWriteTime).TotalMinutes -gt 10) { Remove-Item -LiteralPath $f -Force -ErrorAction Stop }
+          continue
+        }
+        $alive = Test-AcadStatusPidAlive $r.Entry.Pid $r.Entry.PidStart
+        if (Test-AcadStatusRemovable $r.Entry ([DateTime]::UtcNow) $alive ($name -ceq 'acad-pilot.json')) { Remove-Item -LiteralPath $f -Force -ErrorAction Stop }
+      } catch { }
+    }
+  } catch { }
+}
+
+function Start-AcadStatus {
+  # The first status line of a script: `running`. -Script (run, ui, wait, start, stop) goes into detail.script; the detail stays for the
+  # writes that follow. -Nested: this script was called by another one in the same process (stop-acad -> run-in-session, start-acad ->
+  # wait-acad): it writes its running states, the caller writes the final line (Stop-AcadStatus does nothing here).
+  param([Parameter(Mandatory = $true)][string]$Script, [Parameter(Mandatory = $true)][string]$Summary, [hashtable]$Detail = @{}, [switch]$Nested)
+  if (-not $Nested) { Remove-AcadStatusLeftovers }   # (once per process: the caller of a nested script has done it)
+  $d = @{ script = $Script }; foreach ($k in $Detail.Keys) { $d[$k] = $Detail[$k] }
+  $script:AcadStatusCur = $null
+  $script:AcadStatusNested = [bool]$Nested
+  Write-AcadStatus 'running' $Summary -Detail $d
+}
+
+function Write-AcadStatusEnd {
+  # The final write. If it fails it is tried once more (Write-AcadStatus itself retries the replace twice, 50 ms apart: about 200 ms in all);
+  # the status then stays as it is, `stopped` with the result, so a heartbeat, if the script has one left, tries again. Only a write that
+  # worked (or that was off) clears it: nothing to refresh any more.
+  param([string]$Result, [string]$Summary)
+  $d = @{}; $c = $script:AcadStatusCur
+  if ($c -and $c.Detail) { foreach ($k in $c.Detail.Keys) { $d[$k] = $c.Detail[$k] } }
+  $d.result = $Result
+  Write-AcadStatus 'stopped' $Summary -Detail $d
+  if (-not $script:AcadStatusOk) { Start-Sleep -Milliseconds 50; Write-AcadStatus 'stopped' $Summary -Detail $d }
+  if ($script:AcadStatusOk) { $script:AcadStatusCur = $null }
+}
+
+function Stop-AcadStatus {
+  # The last line of a script: state `stopped` (the contract's clean exit; never shown as busy, dropped once stale), the summary says how
+  # it ended and detail.result is idle | error | blocked | waiting-input. A nested script (-Nested) leaves that to its caller.
+  param([Parameter(Mandatory = $true)][string]$Result, [Parameter(Mandatory = $true)][string]$Summary)
+  if ($script:AcadStatusNested) { return }
+  Write-AcadStatusEnd $Result $Summary
+}
+
+function Set-AcadStatusSummary {
+  # Changes the summary of the current state without writing (a poll loop calls it often); the next heartbeat writes it.
+  param([string]$Summary)
+  if ($script:AcadStatusCur) { $script:AcadStatusCur.Summary = $Summary }
+}
+
+function Set-AcadStatusError {
+  # For the catch block of a call that can throw: ends the status line (stopped, result error) with the exception's message (only $Head with
+  # ACAD_STATUS_DETAIL=0). An exception ends the whole script, nested or not. The caller rethrows or exits as it did before.
+  param([string]$Head, $ErrorRecord)
+  Write-AcadStatusEnd 'error' (Join-AcadStatusSummary $Head (Get-AcadStatusText $ErrorRecord.Exception.Message))
+}
+
+function Update-AcadStatusHeartbeat {
+  # Called from poll loops: writes this script's last status again (new `updated`) once 4 s have passed since the last write, well within
+  # the 15 s ttl; after several failed writes in a row the pause grows (at most 10 s, Get-AcadStatusRefreshGap). A no-op in a script that
+  # wrote no status.
+  $c = $script:AcadStatusCur
+  if (-not $c -or ((Get-Date) - $script:AcadStatusAt).TotalSeconds -lt (Get-AcadStatusRefreshGap $script:AcadStatusFails)) { return }
+  Write-AcadStatus $c.State $c.Summary
+}
 
 function Test-BlockerAutoAction {
   # The guard applies allowlisted actions on its own (stalls, timeouts, rejected COM calls) unless ACAD_DEV_BLOCKER_ACTIONS=0.

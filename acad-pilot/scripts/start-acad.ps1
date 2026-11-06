@@ -7,14 +7,16 @@
 #             End a folder with \... to include its subfolders. Plugins loaded from there skip the unsigned-file dialog.
 param([string]$Exe = '', [string]$Product = $env:ACAD_DEV_PRODUCT, [string]$Profile = $env:ACAD_DEV_PROFILE, [string]$Trust = $env:ACAD_DEV_TRUSTED, [int]$TimeoutSec = 240)
 . (Join-Path $PSScriptRoot 'common.ps1')
+. (Join-Path $PSScriptRoot 'status-board.ps1')   # (the status line: see Start-AcadStatus in common.ps1; wait-acad.ps1 writes its states as "start: ...")
+Start-AcadStatus -Script 'start' -Summary 'start: starting AutoCAD'
 if (Get-Process acad -EA SilentlyContinue) {
   'acad already running'
   if ($PSBoundParameters.Keys | Where-Object { $_ -in 'Exe', 'Product', 'Profile' }) { 'note: -Exe/-Product/-Profile apply only to a new AutoCAD; stop this one first to use them' }
 }
 else {
-  if ($Exe -and -not (Test-Path $Exe)) { "acad.exe not found: $Exe"; exit 1 }
+  if ($Exe -and -not (Test-Path $Exe)) { "acad.exe not found: $Exe"; Stop-AcadStatus 'error' 'start: acad.exe not found'; exit 1 }
   if (-not $Exe) { $Exe = Find-Acad }
-  if (-not $Exe) { 'acad.exe not found: set ACAD_DEV_EXE'; exit 1 }
+  if (-not $Exe) { 'acad.exe not found: set ACAD_DEV_EXE'; Stop-AcadStatus 'error' 'start: acad.exe not found (set ACAD_DEV_EXE)'; exit 1 }
   $sw = if ($Product) { " /product $Product" } else { '' }
   if ($Profile) { $sw += " /p `"$Profile`"" }
   if (Test-Interactive) {
@@ -26,19 +28,24 @@ else {
     Invoke-InSession -Command "cmd /c $cmd" -TaskName 'AcadDevStart' -TimeoutSec 20 | Out-Null
   }
   $deadline = (Get-Date).AddMinutes(1)
-  while (-not (Get-Process acad -EA 0) -and (Get-Date) -lt $deadline) { Start-Sleep 1 }
-  if (-not (Get-Process acad -EA 0)) { 'acad did not start'; exit 1 }
+  while (-not (Get-Process acad -EA 0) -and (Get-Date) -lt $deadline) { Start-Sleep 1; Update-AcadStatusHeartbeat }
+  if (-not (Get-Process acad -EA 0)) { 'acad did not start'; Stop-AcadStatus 'error' 'start: acad did not start'; exit 1 }
   "acad pid $((Get-Process acad | Select-Object -First 1).Id) up ($Exe)"
 }
-& (Join-Path $PSScriptRoot 'wait-acad.ps1') -TimeoutSec $TimeoutSec
-$rc = $LASTEXITCODE
+& (Join-Path $PSScriptRoot 'wait-acad.ps1') -TimeoutSec $TimeoutSec -StatusScript start
+$rc = $LASTEXITCODE; $trustFailed = $false
 if ($rc -eq 0 -and $Trust) {
   # task arguments can't carry the paths (spaces, quotes), so they go through a file
   Set-Content (Join-Path $script:Home_ 'trust.txt') ($Trust -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
   $r = Join-Path $script:Out 'trust.txt'; Remove-Item $r -EA SilentlyContinue
+  Write-AcadStatus 'running' 'start: adding the trusted folders'   # (a new summary: the caller's old one would otherwise be written back by the heartbeat)
   Invoke-InSession -Script (Join-Path $PSScriptRoot 'trust-paths.ps1') -TaskName 'AcadDevTrust' -TimeoutSec 30 | Out-Null
   $msg = if (Test-Path $r) { (Get-Content $r -Raw).Trim() } else { 'trusted paths: FAILED no result' }
   $msg
-  if ($msg -like '*FAILED*') { $rc = 1 }
+  if ($msg -like '*FAILED*') { $rc = 1; $trustFailed = $true }
 }
+if ($rc -eq 0) { Stop-AcadStatus 'idle' 'start: AutoCAD is ready' }
+elseif ($rc -eq 6) { Stop-AcadStatus 'blocked' 'start: a window blocks AutoCAD (see the output)' }
+elseif ($trustFailed) { Stop-AcadStatus 'error' 'start: AutoCAD is ready, but adding the trusted paths failed' }
+else { Stop-AcadStatus 'error' 'start: AutoCAD did not become ready (see the output)' }
 exit $rc

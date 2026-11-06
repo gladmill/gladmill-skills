@@ -10,7 +10,8 @@ get past stuck dialogs. All through PowerShell scripts in `scripts/` (relative t
 Supports AutoCAD 2024, 2025 and 2026.
 
 Details: [references/gotchas.md](references/gotchas.md) (read before debugging anything odd),
-[references/com-recipes.md](references/com-recipes.md) (query recipes).
+[references/com-recipes.md](references/com-recipes.md) (query recipes),
+[references/status-board.md](references/status-board.md) (what AutoCAD and the tools driving it are doing right now).
 Script table: [scripts/README.md](scripts/README.md).
 
 ## Pick the mode first
@@ -61,7 +62,12 @@ Every example below shows local (PowerShell, from the `scripts` folder) then rem
    Recipes: [references/com-recipes.md](references/com-recipes.md). Queries are read-only unless you mean otherwise.
 5. **Screenshot**: `.\run-task.ps1 shot.ps1` then `<home>\out\shot.png` | `acad-dev.sh shot ./shot.png`. Look at it (Read tool)
    when the log does not explain the state. `run` also leaves `out\screen.png` (`acad-dev.sh screen`).
-6. **Stuck? (COM hangs, `RPC_E_CALL_REJECTED`, `TIMEOUT`, anything that does not come back)** **First thing, before a screenshot,
+6. **Stuck? (COM hangs, `RPC_E_CALL_REJECTED`, `TIMEOUT`, anything that does not come back, anything looks stuck)** **Run the status
+   board first: `.\status.ps1` | `acad-dev.sh status` (read-only; quick with the AcadStatus add-in, without it a few seconds because it also runs the blocker scan).** One line per tool that reports (AutoCAD itself when the
+   AcadStatus add-in is installed, Retrace, this kit's own `run` / `ui` / `wait`): running, waiting for input (with the pending prompt),
+   blocked by a dialog (its title, texts, buttons), busy (not answering) or idle, and whether acad.exe runs at all; exit 0 idle,
+   3 running, 4 waiting for input / a person, 5 busy, 6 blocked. When it says blocked or busy it adds the blocker scan itself;
+   details in [references/status-board.md](references/status-board.md). **Then, before a screenshot,
    Esc or a retry: `.\blockers.ps1` | `acad-dev.sh blockers`.** It names what is in AutoCAD's way: the dialog, message box, add-in
    window or licence / sign-in screen (title, class, texts, buttons, modal or not), AutoCAD's command line state (`CMDACTIVE`,
    `CMDNAMES`) and a screenshot (`out\blockers.png`). `run`, `wait` and `ui` print the same report themselves, as `BLOCKED BY: ...`

@@ -4,6 +4,8 @@
 # The remote shell can be cmd.exe (the Windows OpenSSH default) or PowerShell: every remote call is a -EncodedCommand.
 #   ACAD_DEV_SSH_HOST   required: the ssh host (an alias from ~/.ssh/config, or user@host)
 #   ACAD_DEV_HOME       optional: work folder ON THE WINDOWS BOX (default %USERPROFILE%\acad-dev). Set it there as a user env var too.
+#   ACAD_STATUS, ACAD_STATUS_OWNER, ACAD_STATUS_DIR, ACAD_STATUS_DETAIL   status board settings: when set HERE they are passed to the box
+#                       on every call (the scripts read them there); unset, the box's own values apply. No quotes or line breaks in them.
 # Usage: acad-dev.sh <command> [args]
 #   install                     copy the scripts to the box (run once, and after updating the kit)
 #   start [timeoutSec] [--trust "C:\a\...;C:\b"] [--product P] [--profile P] [--exe path]   start AutoCAD in the interactive
@@ -17,6 +19,13 @@
 #                               (blockers.txt in the work folder; see scripts/README.md) names. Security prompts, licence / sign-in /
 #                               trial screens and "save changes?" prompts are never touched. run, wait and ui call it themselves
 #                               when they stall or time out (exit 6); ACAD_DEV_BLOCKER_ACTIONS=0 (on the box) stops them applying the allowlist
+#   status [--json] [--no-scan]   WHAT IS AUTOCAD DOING? The status board: one line per tool that reports (the AcadStatus add-in, Retrace,
+#                               this kit's own run / ui / wait): state, age, summary; for the add-in also the pending prompt and the open
+#                               dialog. Read-only. Run it FIRST when anything looks stuck. Exit 0 idle / nothing, 3 running, 4 waiting
+#                               for input or a person, 5 busy (not answering), 6 blocked, 1 error, 2 setup error. Quick with the AcadStatus
+#                               add-in; without it (acad.exe runs, nothing reports) it also runs the read-only blocker scan, a few seconds,
+#                               and so it does when the status is blocked or busy (--no-scan skips the scan).
+#                               --json prints one JSON object (overall, exitCode, acadRunning, entries, ignored, skipped, notes, scan)
 #   wait [timeoutSec]           wait until AutoCAD answers over COM and is quiescent (exit 6: a window blocks it, report printed)
 #   stop [--discard|--force]    quit AutoCAD (refuses if a drawing has unsaved changes; --discard throws them away, --force kills a hung AutoCAD)
 #   run "<cmds>" [--query f.ps1] [--wait n] [--timeout s] [--stall s] [--esc]   send commands ('|' separates, \n = Enter),
@@ -41,11 +50,21 @@ HOST="${ACAD_DEV_SSH_HOST:-}"
 here="$(cd "$(dirname "$0")" && pwd)"
 SSHO=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)   # a dead connection ends in about a minute
 scp() { command scp -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$@"; }   # same limits for copies
+# Status board settings set on THIS machine are passed to the box on every call: the scripts that write the status line (run, ui, wait) and
+# status itself read them there. Each value travels inside a single-quoted PowerShell string, so quotes and line breaks are refused.
+FWD=""
+for v in ACAD_STATUS ACAD_STATUS_OWNER ACAD_STATUS_DIR ACAD_STATUS_DETAIL; do
+  val="${!v-}"; [ -n "$val" ] || continue
+  case "$val" in
+    *"'"*|*‘*|*’*|*‚*|*‛*|*$'\n'*|*$'\r'*) echo "$v: no quotes or line breaks" >&2; exit 2 ;;
+  esac
+  FWD+="\$env:$v='$val'; "
+done
 # Every remote call is `powershell -EncodedCommand <base64 of UTF-16LE>`, so it works whatever the SSH default shell is
 # (Windows OpenSSH defaults to cmd.exe; PowerShell and others work too) and needs no quoting.
 rps() {
   local enc
-  enc="$(printf '%s' "\$ProgressPreference='SilentlyContinue'; $1" | iconv -f UTF-8 -t UTF-16LE | base64 | tr -d '\r\n')"
+  enc="$(printf '%s' "\$ProgressPreference='SilentlyContinue'; $FWD$1" | iconv -f UTF-8 -t UTF-16LE | base64 | tr -d '\r\n')"
   ssh "${SSHO[@]}" "$HOST" "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -InputFormat None -OutputFormat Text -EncodedCommand $enc"
 }
 # the home folder on the box, with forward slashes (scp accepts C:/...)
@@ -99,6 +118,16 @@ case "$cmd" in
       args+=("-$k" "'$v'")
     done
     psa start-acad.ps1 "${args[@]}" ;;
+  status)
+    sa=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --json) sa+=(-Json) ;;
+        --no-scan) sa+=(-NoScan) ;;
+        *) echo "status: unknown argument '$1' (expected --json, --no-scan)" >&2; exit 2 ;;
+      esac; shift
+    done
+    psa status.ps1 ${sa[@]+"${sa[@]}"} ;;
   wait) [[ "${1:-240}" =~ ^[0-9]+$ ]] || { echo "wait: timeoutSec takes whole seconds" >&2; exit 2; }
         psa wait-acad.ps1 -TimeoutSec "${1:-240}" ;;   # 0 = the default 240; exit 6 = BLOCKED BY a window (report printed)
   blockers)
