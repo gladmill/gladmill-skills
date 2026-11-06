@@ -55,6 +55,12 @@ Remote mode (Claude Code on a Mac/Linux/other Windows machine, AutoCAD on a Wind
 | `ACAD_DEV_COM_RETRY_SEC` | How long a COM call AutoCAD rejects as busy (`RPC_E_CALL_REJECTED`) is retried before it fails, in seconds. Default 30, at most 600; 0 turns retrying off. Read on the Windows machine (remote mode: set it there as a user environment variable). |
 | `ACAD_DEV_BLOCKERS_FILE` / `ACAD_DEV_BLOCKER_ACTIONS` | The blocker guard's allowlist file (default `blockers.txt` in the work folder) and `0` to stop it dismissing windows on its own. Read on the Windows machine. |
 | `ACAD_DEV_TRUSTED` | Folders to add to AutoCAD's trusted locations (`TRUSTEDPATHS`) at start, `;`-separated; end one with `\...` to include subfolders. Same as `acad-dev.sh start --trust "..."`. Plugins you load from there skip the "unsigned executable" dialog. You choose these folders: anything that can write to them gets code loaded into AutoCAD. |
+| `ACAD_STATUS_DIR` | The status board folder. Default `%ProgramData%\Gladmill\acad-status`. Set it where the scripts and the other tools run (remote mode: on the Windows machine). |
+| `ACAD_STATUS` | `0`: the kit's scripts write no line to the status board. |
+| `ACAD_STATUS_OWNER` | Who started the work (shown as `owner` on the board), for example `claude`. |
+| `ACAD_STATUS_DETAIL` | `0`: no command or step text in the kit's status line. |
+
+In remote mode `acad-dev.sh` passes `ACAD_STATUS`, `ACAD_STATUS_OWNER`, `ACAD_STATUS_DIR` and `ACAD_STATUS_DETAIL` to the Windows machine when they are set on the machine running it.
 
 ## Dialogs, alerts and the ribbon
 Ask Claude, for example: "Load my LISP, run MYCMD, fill its dialog with Name=Test and Quantity=3, press OK and tell me what the
@@ -75,6 +81,16 @@ state and a screenshot, and the script exits 6. A `run` also notices a command t
 - Security prompts, licence / sign-in / trial screens and "save changes?" prompts are never answered by the kit, whatever the
   file says. A Windows Update "restart to install" prompt is only reported.
 - Every wait now has a limit, and ssh/scp give up on a dead connection. Details: `scripts/README.md`.
+
+## What is AutoCAD doing? (status board)
+Ask Claude to run `acad-dev.sh status` (or `status.ps1`) whenever anything looks stuck. It prints one line per tool that reports to the
+shared status folder (`%ProgramData%\Gladmill\acad-status`, or `ACAD_STATUS_DIR`): the kit's own `run`, `ui` and `wait`, and, when installed, the
+AcadStatus add-in inside AutoCAD (its pending prompt, the open dialog's title, texts and buttons) and Retrace. The overall state is the most
+urgent one (blocked, needs a person, waiting for input, busy, error, running, idle), and the exit code says it too (0 idle, 3 running, 4 waiting,
+5 busy, 6 blocked). With the add-in it is quick; without it (or when the status is blocked or busy) it also runs the read-only blocker scan, which takes
+a few seconds (`--no-scan` skips it). The status folder is readable by every local user, so the kit writes only the start of the commands (verbs and
+targets for `ui`, never typed values); `ACAD_STATUS_DETAIL=0` leaves even that out, and `ACAD_STATUS=0` stops the kit writing its own line. Details and
+the file format: `acad-pilot/references/status-board.md`. The AcadStatus add-in is not part of this skill: it ships inside the Retrace release zip (gladmill/retrace-autocad releases, from Retrace 0.5.0). The board works without it.
 
 ## Optional: trial start-up window
 `scripts/install-trial-watch.ps1` adds a logon task that closes AutoCAD's trial splash window for 5 minutes after
